@@ -29,7 +29,7 @@ YAPT_Actions = (
     YAPT_Action_flatcp,
     YAPT_Action_optimize,
     YAPT_Action_checknames,
-    YAPT_Action_checknames,
+    YAPT_Action_correctnames,
     )
 
 PIL_FORMATS = [
@@ -38,6 +38,8 @@ PIL_FORMATS = [
     ]
 
 BORDER_Chars = '┌┐┘└─│┴├┬┤╷┼'
+
+ILLEGAL_NTFS_CHARS = "[<>:/\\|?*\"]|[\0-\31]"
 
 
 # ......................................................................................................................
@@ -66,11 +68,16 @@ class YaptClass(object):
         self.recursive = recursive
         self.threads = threads if threads else 0
 
+        # Prepare regex
+        self.validNTFSCharsRegEx = re.compile(ILLEGAL_NTFS_CHARS)
+        self.yyymmddRegEx = re.compile('(\d{4})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
+
         # reset Counters
         self.files = []
         self.filesCount = 0
         self.filesSize = 0
 
+    # ..................................................................................................................
     def resetCounters(self):
         self.files = []
         self.filesCount = 0
@@ -87,6 +94,20 @@ class YaptClass(object):
         print(title)
         print('-' * 1 * (len(title)))
 
+    def getCorrectFileName(self, file:str) -> str:
+        # 20160712_1600_IMG_1692.jpg
+        res = self.yyymmddRegEx.search(file)
+        if res:
+            p = res.group(1)+res.group(2)+res.group(3)+'_'+res.group(4)+res.group(5)
+            s = res.group(6)
+            s = re.sub(p, '', s)
+            n = p+'_'+s
+        else:
+            n = file
+        n = self.validNTFSCharsRegEx.sub('_', n)
+        return n
+
+    # ..................................................................................................................
     def loadSource(self, source: str) -> bool:
         self.printTitle('loading %s ...' % source)
         elapsed_time = time.time()
@@ -168,44 +189,23 @@ class YaptClass(object):
     # ...................................................................................................................
     def checkFileName(self, file: str):
         f = os.path.basename(file)
-        ILLEGAL_NTFS_CHARS = "[<>:/\\|?*\"]|[\0-\31]"
-        n = re.sub(ILLEGAL_NTFS_CHARS,'',f)
-
-        # res = re.match('^\d{4}-\d{2}-\d{2} \d{2}h\d{2}', f)
-        # if res:
-        #     print(n, res)
-        #     return
-        res = re.search('(\d{4})-(\d{2})-(\d{2}) ', f)
-        if res:
-            print(file, res.groups())
+        n = self.getCorrectFileName(f)
+        if n != f:
+            print(n, '!=', f)
         pass
 
     # ...................................................................................................................
     def correctFileName(self, file: str):
+        d = os.path.dirname(file)
         f = os.path.basename(file)
-        ILLEGAL_NTFS_CHARS = "[<>:/\\|?*\"]|[\0-\31]"
-        res = re.match(ILLEGAL_NTFS_CHARS, f)
-        if res:
-            print(file, '  << ILLEGAL_NTFS_CHARS')
-            return
-        res = re.search('(\d{4})-(\d{2})-(\d{2}) ', f)
-        if res:
-            print(file, res.groups())
-            return
-        pass
+        n = self.getCorrectFileName(f)
+        if n != f:
+            n = os.path.join(d, n)
+            if not os.path.exists(n):
+                os.rename(file, n)
+            else:
+                print(n, '!=', f, '** can not rename !')
 
-        # else:
-        #     print(file)
-                # //            res = re.match('^\d{4}', f)
-                # res
-            # f = os.path.basename(file)
-            # def __removeIllegalChars(name):
-            #     # removes characters that are invalid for NTFS
-            #     return re.sub(ILLEGAL_NTFS_CHARS, "", name)
-            # 2016-07-09 19h29   >>>  20160708_1730
-            # if '-' in f:
-            #     print(self.source, f)
-        pass
 
     def ren2date(self, file: str) -> None:
         print(self.source, file)
