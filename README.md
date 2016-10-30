@@ -22,3 +22,9 @@ for image in *.jpg; do
 #   exiv2 -r'%Y-%m-%d %H:%M :basename:' $FINALPATH/$image
 done
 ```
+
+
+
+# Sources
+https://github.com/novoid/filetags/
+https://github.com/Bobsans/image-optimizer
