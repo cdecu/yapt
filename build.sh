@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-python setup.py sdist
-python setup.py bdist_wheel
-python setup.py clean
+python3 setup.py sdist
+python3 setup.py bdist_wheel
+python3 setup.py clean
 
 rm -rf build
 rm -rf *.egg-info
