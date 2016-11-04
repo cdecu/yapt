@@ -165,6 +165,7 @@ class YaptClass(object):
 
     def getCorrectFileName(self, file: str) -> str:
         # 20160712_1600_IMG_1692.jpg
+        # 20100101_1930_2010_01_01_19h30_IMG_2647
         res = self.yyymmddRegEx.search(file)
         if res:
             p = res.group(1) + res.group(2) + res.group(3) + '_' + res.group(4) + res.group(5)
