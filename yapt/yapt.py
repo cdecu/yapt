@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import humanize
+import pathlib
 from PIL import Image
 
 __author__ = 'cdc'
@@ -21,7 +22,6 @@ __version__ = '0.0.1'
 YAPT_Action_count = 'count'
 YAPT_Action_list = 'list'
 YAPT_Action_ren2date = 'ren2date'
-YAPT_Action_flatcp = 'flatcp'
 YAPT_Action_optimize = 'optimize'
 YAPT_Action_checknames = 'checknames'
 YAPT_Action_correctnames = 'correctnames'
@@ -30,7 +30,6 @@ YAPT_Action_thumbnails = 'thumbnails'
 YAPT_Actions = (
     YAPT_Action_list,
     YAPT_Action_ren2date,
-    YAPT_Action_flatcp,
     YAPT_Action_optimize,
     YAPT_Action_checknames,
     YAPT_Action_correctnames,
@@ -77,15 +76,24 @@ class YaptClass(object):
     Class to Execute wanted actions. Yes a class just to learn python class
     """
 
-    def __init__(self, target: str = '', onlytest: bool = True, recursive: bool = True, threads: int = 5):
-        self.target = target
+    def __init__(self, source: str = '',
+                 target: str = '',
+                 onlytest: bool = True,
+                 recursive: bool = True,
+                 flat: int = 0,
+                 threads: int = 5
+                 ):
+        self.source = os.path.realpath(source)
+        self.target = os.path.realpath(target)
         self.onlytest = onlytest
         self.recursive = recursive
+        self.flat = flat
         self.threads = threads if threads else 0
 
         # Prepare regex
         self.validNTFSCharsRegEx = re.compile(ILLEGAL_NTFS_CHARS)
-        self.yyymmddRegEx = re.compile('(\d{4})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
+        self.yyymmddhhmmRegEx = re.compile('(\d{4})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
+        self.yyymmddRegEx = re.compile('(\d{4})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
 
         # default thumbnailSize (width, height)
         self.thumbnailSize = (800, 600,)
@@ -153,7 +161,7 @@ class YaptClass(object):
 
         if os.path.exists(self.target):
             if not os.path.isdir(self.target):
-                raise ValueError('Please select a valid target dir')
+                raise ValueError('Please select a valid target dir for '+action)
         else:
             os.mkdir(self.target)
 
@@ -166,20 +174,52 @@ class YaptClass(object):
     def getCorrectFileName(self, file: str) -> str:
         # 20160712_1600_IMG_1692.jpg
         # 20100101_1930_2010_01_01_19h30_IMG_2647
-        res = self.yyymmddRegEx.search(file)
+        n = self.validNTFSCharsRegEx.sub('_', file)
+        res = self.yyymmddhhmmRegEx.search(n)
         if res:
             p = res.group(1) + res.group(2) + res.group(3) + '_' + res.group(4) + res.group(5)
             s = res.group(6)
             s = re.sub(p, '', s)
+            res = self.yyymmddhhmmRegEx.search(s)
+            if res:
+                s = res.group(6)
             n = p + '_' + s
-        else:
-            n = file
-        n = self.validNTFSCharsRegEx.sub('_', n)
+            return n
+        res = self.yyymmddRegEx.search(n)
+        if res:
+            p = res.group(1) + res.group(2) + res.group(3)
+            s = res.group(6)
+            n = p + '_' + s
+            return n
+
+        return n
+
+    def getTargetFileName(self, file: str) -> str:
+        f = os.path.basename(file)
+        if self.flat == 0:
+            n = os.path.join(self.target, f)
+            return n
+        p = os.path.dirname(file)
+        p = p.replace(self.source, '')
+        parts = pathlib.PurePath(p).parts
+        lvls = self.flat+1 if self.flat+1 < len(parts) else len(parts)
+        n = self.target
+        for i in range(1, lvls):
+            n = os.path.join(n, parts[i])
+        if not os.path.exists(n):
+            os.mkdir(n)
+        n = os.path.join(n, f)
+        return n
+
+    def getTargetErrorFileName(self, file: str) -> str:
+        f = os.path.basename(file)
+        n = os.path.join(self.target, 'errors', f)
         return n
 
     # ..................................................................................................................
     def loadSource(self, source: str) -> bool:
         self.printTitle('loading %s ...' % source)
+        self.source = os.path.realpath(source)
         elapsed_time = time.time()
         self.resetCounters()
         if source:
@@ -228,7 +268,6 @@ class YaptClass(object):
             YAPT_Action_optimize: self.checkTarget,
             YAPT_Action_checknames: self.checkTarget,
             YAPT_Action_correctnames: self.checkTarget,
-            YAPT_Action_flatcp: self.checkTarget,
             YAPT_Action_thumbnails: self.checkTarget,
         }
         actions = {
@@ -238,7 +277,6 @@ class YaptClass(object):
             YAPT_Action_optimize: self.listFile,
             YAPT_Action_checknames: self.checkFileName,
             YAPT_Action_correctnames: self.correctFileName,
-            YAPT_Action_flatcp: self.flatcp,
             YAPT_Action_thumbnails: self.createThumbnail,
         }
         self.newfilesCount = self.filesCount
@@ -327,27 +365,14 @@ class YaptClass(object):
     # ...................................................................................................................
     def ren2date(self, file: str) -> None:
         f = os.path.basename(file)
-        res = self.yyymmddRegEx.search(f)
+        res = self.yyymmddhhmmRegEx.search(f)
         if not res:
             self.errors.append(YaptError(file, 'should be renamed'))
         pass
 
     # ...................................................................................................................
-    def flatcp(self, file: str) -> None:
-        f = os.path.basename(file)
-        n = os.path.join(self.target, f)
-        try:
-            with Image.open(file) as img:
-                img.save(n, optimize=True)
-            self.newfilesSize -= os.path.getsize(file)
-            self.newfilesSize += os.path.getsize(n)
-        except Exception as ex:
-            self.errors.append(YaptError(file, ex))
-
-    # ...................................................................................................................
     def createThumbnail(self, file: str) -> None:
-        f = os.path.basename(file)
-        n = os.path.join(self.target, f)
+        n = self.getTargetFileName(file)
         try:
             with Image.open(file) as img:
                 if (img.width > self.thumbnailSize[0]) or (img.height > self.thumbnailSize[1]):
@@ -364,7 +389,7 @@ class YaptClass(object):
             self.newfilesSize += os.path.getsize(n)
         except Exception as ex:
             self.errors.append(YaptError(file, ex))
-            n = os.path.join(self.target, 'errors', f)
+            n = self.getTargetErrorFileName(file)
             shutil.copy(file, n)
             self.newfilesCount -= 1
 
@@ -380,17 +405,20 @@ def main():
     parser.add_argument('-y', '--onlytest', dest='onlytest', help='dry run', action='store_true')
     parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', default=True,
                         help='recursive scan subfolders')
+    parser.add_argument('-f', '--flat', dest='flat', type=int, default=1,
+                        help='flat target tree level')
     parser.add_argument('-x', '--threads', dest='threads', type=int, default=5, help='set threads count')
-    parser.add_argument('-s', '--source', type=str, default='/home/cdc/Images/', help='Root Dir to process')
+    parser.add_argument('-s', '--source', type=str, default='/home/cdc/Photos/', help='Root Dir to process')
     parser.add_argument('-t', '--target', type=str, default='/home/cdc/yapt', help='Destination Folder')
     parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_count,
                         help='action to perform')
     args = parser.parse_args()
 
-    yatp = YaptClass(target=args.target, onlytest=args.onlytest, recursive=args.recursive, threads=args.threads)
+    yatp = YaptClass(source=args.source, target=args.target, onlytest=args.onlytest, recursive=args.recursive, flat=args.flat, threads=args.threads)
     if not yatp.loadSource(args.source):
         print('ByeBye')
         exit(-1)
+
     yatp.processFiles(args.action)
 
 
