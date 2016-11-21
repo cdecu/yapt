@@ -13,26 +13,23 @@ import re
 import sys
 import humanize
 import pathlib
+import datetime
 from PIL import Image
+import piexif
 
 __author__ = 'cdc'
 __email__ = 'cdc@decumont.be'
 __version__ = '0.0.1'
 
-YAPT_Action_count = 'count'
 YAPT_Action_list = 'list'
 YAPT_Action_ren2date = 'ren2date'
 YAPT_Action_optimize = 'optimize'
-YAPT_Action_checknames = 'checknames'
-YAPT_Action_correctnames = 'correctnames'
 YAPT_Action_thumbnails = 'thumbnails'
 
 YAPT_Actions = (
     YAPT_Action_list,
     YAPT_Action_ren2date,
     YAPT_Action_optimize,
-    YAPT_Action_checknames,
-    YAPT_Action_correctnames,
     YAPT_Action_thumbnails,
 )
 
@@ -51,6 +48,7 @@ class YaptError:
     """
     Class to store error
     """
+
     def __init__(self, file, error):
         """
         Yqpt Error Class
@@ -68,6 +66,18 @@ def decode(path: str) -> str:
     utility fct to encode/decode
     """
     return path.encode(sys.stdout.encoding, 'ignore').decode(sys.stdout.encoding)
+
+
+def decodeExifDateTime(value: str) -> object:
+    """
+    utility fct to encode/decode
+    """
+    try:
+        # return path.encode(sys.stdout.encoding, 'ignore').decode(sys.stdout.encoding)
+        d = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
+        return d
+    except ValueError:
+        return None
 
 
 # ......................................................................................................................
@@ -104,6 +114,7 @@ class YaptClass(object):
         self.filesSize = 0
         self.success = []
         self.errors = []
+        self.fileToRename = 0
         self.fileRenamed = 0
         self.fileDeleted = 0
         self.newfilesCount = 0
@@ -116,6 +127,7 @@ class YaptClass(object):
         self.filesSize = 0
         self.success = []
         self.errors = []
+        self.fileToRename = 0
         self.fileRenamed = 0
         self.fileDeleted = 0
         self.newfilesCount = 0
@@ -126,7 +138,7 @@ class YaptClass(object):
         print('-' * 1 * (len(title)))
 
     def printActionStart(self, action: str) -> None:
-        title = action
+        title = 'Start ' + action
         if self.onlytest:
             title += ' OnlyTest'
         title += ' %d File(s)' % self.filesCount
@@ -135,21 +147,25 @@ class YaptClass(object):
 
     def printActionEnd(self, action: str):
         if self.errors:
-            print('\n%s Errors:' % action)
+            print('%s Errors:' % action)
             for e in self.errors:
                 print('\t' + decode(str(e)))
+            print('\n')
 
         if self.success:
-            print('\n%s Success:' % action)
+            print('%s Success:' % action)
             for s in self.success:
                 print('\t' + decode(s))
+            print('\n')
 
-        print('\nResult\n------')
-        print('- File(s) : %d Size %s' % (self.newfilesCount, humanize.naturalsize(self.newfilesSize)))
+        print('Result\n------')
+        print('..File(s)  : %d Size %s' % (self.newfilesCount, humanize.naturalsize(self.newfilesSize)))
+        if self.fileToRename:
+            print('..ToRename : %d' % self.fileToRename)
         if self.fileRenamed:
-            print('- Renamed : %d' % self.fileRenamed)
+            print('..Renamed  : %d' % self.fileRenamed)
         if self.fileDeleted:
-            print('- Deleted : %d' % self.fileDeleted)
+            print('..Deleted  : %d' % self.fileDeleted)
         print()
 
     def noCheck(self, action: str) -> None:
@@ -161,7 +177,7 @@ class YaptClass(object):
 
         if os.path.exists(self.target):
             if not os.path.isdir(self.target):
-                raise ValueError('Please select a valid target dir for '+action)
+                raise ValueError('Please select a valid target dir for ' + action)
         else:
             os.mkdir(self.target)
 
@@ -171,11 +187,37 @@ class YaptClass(object):
 
         pass
 
+    @staticmethod
+    def getExifTimeStamp(file: str) -> datetime:
+        try:
+            exif_dict = piexif.load(file)
+        except ValueError:
+            return None
+        if piexif.ImageIFD.DateTime in exif_dict["0th"]:
+            s = exif_dict["0th"].pop(piexif.ImageIFD.DateTime)
+            return decodeExifDateTime(str(s, 'utf-8'))
+        if piexif.ExifIFD.DateTimeOriginal in exif_dict["Exif"]:
+            s = exif_dict["Exif"].pop(piexif.ExifIFD.DateTimeOriginal)
+            return decodeExifDateTime(str(s, 'utf-8'))
+        if piexif.ExifIFD.DateTimeDigitized in exif_dict["Exif"]:
+            s = exif_dict["Exif"].pop(piexif.ExifIFD.DateTimeDigitized)
+            return decodeExifDateTime(str(s, 'utf-8'))
+        # for ifd in ("0th", "Exif", "GPS", "1st"):
+        #     for tag in exif_dict[ifd]:
+        #         print(ifd, piexif.TAGS[ifd][tag]["name"], exif_dict[ifd][tag])
+        # print('****', file)
+        # print('****', exif_dict)
+        return None
+
     def getCorrectFileName(self, file: str) -> str:
         # 20160712_1600_IMG_1692.jpg
         # 20100101_1930_2010_01_01_19h30_IMG_2647
-        n = self.validNTFSCharsRegEx.sub('_', file)
-        res = self.yyymmddhhmmRegEx.search(n)
+        d = os.path.dirname(file)
+        f = os.path.basename(file)
+        f = f.replace('hpnx', 'HPNX')
+        f = f.replace('IMG', 'Img').replace('img', 'Img')
+        x = self.validNTFSCharsRegEx.sub('_', f)
+        res = self.yyymmddhhmmRegEx.search(x)
         if res:
             p = res.group(1) + res.group(2) + res.group(3) + '_' + res.group(4) + res.group(5)
             s = res.group(6)
@@ -183,16 +225,19 @@ class YaptClass(object):
             res = self.yyymmddhhmmRegEx.search(s)
             if res:
                 s = res.group(6)
-            n = p + '_' + s
-            return n
-        res = self.yyymmddRegEx.search(n)
+            x = p + '_' + s
+            return os.path.join(d, x)
+        res = self.yyymmddRegEx.search(x)
         if res:
             p = res.group(1) + res.group(2) + res.group(3)
             s = res.group(6)
-            n = p + '_' + s
-            return n
-
-        return n
+            x = p + '_' + s
+            return os.path.join(d, x)
+        t = self.getExifTimeStamp(file)
+        if t:
+            x = t.strftime('%Y%m%d_%H%M') + '_' + f
+            return os.path.join(d, x)
+        return None
 
     def getTargetFileName(self, file: str) -> str:
         f = os.path.basename(file)
@@ -202,7 +247,7 @@ class YaptClass(object):
         p = os.path.dirname(file)
         p = p.replace(self.source, '')
         parts = pathlib.PurePath(p).parts
-        lvls = self.flat+1 if self.flat+1 < len(parts) else len(parts)
+        lvls = self.flat + 1 if self.flat + 1 < len(parts) else len(parts)
         n = self.target
         for i in range(1, lvls):
             n = os.path.join(n, parts[i])
@@ -262,21 +307,15 @@ class YaptClass(object):
         self.printActionStart(action)
         elapsed_time = time.time()
         before_action = {
-            YAPT_Action_count: self.checkTarget,
-            YAPT_Action_list: self.checkTarget,
-            YAPT_Action_ren2date: self.checkTarget,
+            YAPT_Action_list: self.noCheck,
+            YAPT_Action_ren2date: self.noCheck,
             YAPT_Action_optimize: self.checkTarget,
-            YAPT_Action_checknames: self.checkTarget,
-            YAPT_Action_correctnames: self.checkTarget,
             YAPT_Action_thumbnails: self.checkTarget,
         }
         actions = {
-            YAPT_Action_count: self.countFile,
             YAPT_Action_list: self.listFile,
             YAPT_Action_ren2date: self.ren2date,
             YAPT_Action_optimize: self.listFile,
-            YAPT_Action_checknames: self.checkFileName,
-            YAPT_Action_correctnames: self.correctFileName,
             YAPT_Action_thumbnails: self.createThumbnail,
         }
         self.newfilesCount = self.filesCount
@@ -309,68 +348,48 @@ class YaptClass(object):
         pass
 
     # ...................................................................................................................
-    def countFile(self, file: str):
-        pass
-
-    # ...................................................................................................................
     def listFile(self, file: str):
         self.success.append(file)
         pass
 
     # ...................................................................................................................
-    def checkFileName(self, file: str):
-        f = os.path.basename(file)
-        n = self.getCorrectFileName(f)
-        if n != f:
-            self.errors.append(YaptError(file, 'should be renamed to ' + n))
-        pass
+    def ren2date(self, file: str):
+        newFileName = self.getCorrectFileName(file)
 
-    # ...................................................................................................................
-    def correctFileName(self, file: str):
-        d = os.path.dirname(file)
-        f = os.path.basename(file)
-        n = self.getCorrectFileName(f)
-        if n != f:
-            n = os.path.join(d, n)
-            if os.path.exists(n):
-                # Delete Duplicate !
+        if not newFileName:
+            self.errors.append(YaptError(file, 'Invalid FileName'))
+            return
+
+        if newFileName == file:
+            return
+
+        self.fileToRename += 1
+        # self.onlytest = True
+
+        # Delete Existing !
+        if os.path.exists(newFileName):
+            if not self.onlytest:
                 try:
-                    if not self.onlytest:
-                        os.remove(file)
-                        self.success.append('%s >> Deleted' % file)
-                    else:
-                        self.success.append('%s >> to be deleted' % file)
-                    self.fileDeleted += 1
-                    pass
+                    os.remove(file)
+                    self.success.append('%s >> Deleted' % file)
                 except IOError as Err:
                     self.errors.append(YaptError(file, 'Delete I/O error({0}): {1}' % (Err.errno, Err.strerror)))
             else:
-                # Rename to yyyymm...
-                try:
-                    if not self.onlytest:
-                        os.rename(file, n)
-                        self.success.append('%s >> Renamed' % file)
-                    else:
-                        self.success.append('%s >> to be renamed' % file)
-                    self.newfilesSize += os.path.getsize(n)
-                    self.newfilesCount += 1
-                    self.fileRenamed += 1
-                except IOError as Err:
-                    self.errors.append(YaptError(file, 'Rename I/O error({0}): {1}' % (Err.errno, Err.strerror)))
+                self.success.append('%s >> replace existing %s' % (file, newFileName))
+
+        # Rename to yyyymm...
+        if not self.onlytest:
+            try:
+                os.rename(file, newFileName)
+                self.success.append('%s >> Renamed' % file)
+                self.fileToRename -= 1
+                self.fileRenamed += 1
+            except IOError as Err:
+                self.errors.append(YaptError(file, 'Rename I/O error({0}): {1}' % (Err.errno, Err.strerror)))
         else:
-            self.newfilesSize += os.path.getsize(file)
-            self.newfilesCount += 1
-        pass
+            self.success.append('%s >> to be renamed to %s' % (file, os.path.basename(newFileName)))
 
-    # ...................................................................................................................
-    def ren2date(self, file: str) -> None:
-        f = os.path.basename(file)
-        res = self.yyymmddhhmmRegEx.search(f)
-        if not res:
-            self.errors.append(YaptError(file, 'should be renamed'))
-        pass
-
-    # ...................................................................................................................
+    # ..................................................................................................................
     def createThumbnail(self, file: str) -> None:
         n = self.getTargetFileName(file)
         try:
@@ -410,11 +429,17 @@ def main():
     parser.add_argument('-x', '--threads', dest='threads', type=int, default=5, help='set threads count')
     parser.add_argument('-s', '--source', type=str, default='/home/cdc/Photos/', help='Root Dir to process')
     parser.add_argument('-t', '--target', type=str, default='/home/cdc/yapt', help='Destination Folder')
-    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_count,
+    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_ren2date,
                         help='action to perform')
     args = parser.parse_args()
 
-    yatp = YaptClass(source=args.source, target=args.target, onlytest=args.onlytest, recursive=args.recursive, flat=args.flat, threads=args.threads)
+    yatp = YaptClass(source=args.source,
+                     target=args.target,
+                     onlytest=args.onlytest,
+                     recursive=args.recursive,
+                     flat=args.flat,
+                     threads=args.threads
+                     )
     if not yatp.loadSource(args.source):
         print('ByeBye')
         exit(-1)
