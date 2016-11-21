@@ -38,7 +38,7 @@ setup(
     keywords='PIL based photo tool',
     platforms=['Any'],
     packages=find_packages(),
-    install_requires=['Pillow', 'piexif', ''humanize'],
+    install_requires=['Pillow', 'piexif', 'humanize'],
     entry_points={
         'console_scripts': ['yapt=yapt.yapt:main']
     }
