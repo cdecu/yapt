@@ -14,22 +14,22 @@ import sys
 import pathlib
 import datetime
 import typing
-from PIL import Image
 import humanize
 import piexif
+from PIL import Image
 
 __author__ = 'cdc'
 __email__ = 'cdc@decumont.be'
 __version__ = '0.0.1'
 
 YAPT_Action_list = 'list'
-YAPT_Action_ren2date = 'ren2date'
+YAPT_Action_rename = 'rename'
 YAPT_Action_optimize = 'optimize'
 YAPT_Action_thumbnails = 'thumbnails'
 
 YAPT_Actions = (
     YAPT_Action_list,
-    YAPT_Action_ren2date,
+    YAPT_Action_rename,
     YAPT_Action_optimize,
     YAPT_Action_thumbnails,
 )
@@ -122,6 +122,92 @@ class YaptClass(object):
         self.newfilesSize = 0
 
     # ..................................................................................................................
+    def loadSource(self, source: str) -> bool:
+        self.printTitle('loading %s ...' % source)
+        self.source = os.path.realpath(source)
+        elapsed_time = time.time()
+        self.resetCounters()
+        if source:
+            if os.path.exists(source):
+                if os.path.isfile(source):
+                    self.files.append(source)
+                elif os.path.isdir(source):
+                    if self.recursive:
+                        for r, d, f in os.walk(source):
+                            for file in f:
+                                name, ext = os.path.splitext(file)
+                                if ext and ext.lower()[1:] in PIL_FORMATS:
+                                    ff = os.path.join(r, file)
+                                    self.filesSize += os.path.getsize(ff)
+                                    self.files.append(ff)
+                                    self.filesCount += 1
+                    else:
+                        for file in os.listdir(source):
+                            name, ext = os.path.splitext(file)
+                            if ext and ext.lower()[1:] in PIL_FORMATS:
+                                ff = os.path.join(source, file)
+                                self.filesSize += os.path.getsize(ff)
+                                self.files.append(ff)
+                                self.filesCount += 1
+            else:
+                print('Error: Path %s not exists!' % source, file=sys.stderr)
+                exit(-1)
+
+        if not self.files:
+            print('Error: No images found', file=sys.stderr)
+            exit(-1)
+
+        print('%d files %s' % (self.filesCount, humanize.naturalsize(self.filesSize)))
+        elapsed_time = time.time() - elapsed_time
+        print('in %.3f sec\n' % elapsed_time)
+        return True
+
+    # ..................................................................................................................
+    def processFiles(self, action: str) -> None:
+        self.printActionStart(action)
+        elapsed_time = time.time()
+        before_action = {
+            YAPT_Action_list: self.noCheck,
+            YAPT_Action_rename: self.noCheck,
+            YAPT_Action_optimize: self.checkTarget,
+            YAPT_Action_thumbnails: self.checkTarget,
+        }
+        actions = {
+            YAPT_Action_list: self.listFile,
+            YAPT_Action_rename: self.rename,
+            YAPT_Action_optimize: self.listFile,
+            YAPT_Action_thumbnails: self.createThumbnail,
+        }
+        self.newfilesCount = self.filesCount
+        self.newfilesSize = self.filesSize
+        before_action[action](action)
+        fct = actions[action]
+        if self.threads:
+            threads = []
+            for i in range(self.threads):
+                threads.append(threading.Thread(target=self.thread_processFiles, args=(fct,)))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        else:
+            self.thread_processFiles(fct)
+        elapsed_time = time.time() - elapsed_time
+        print('in %.3f sec\n' % elapsed_time)
+        self.printActionEnd(action)
+        pass
+
+    def thread_processFiles(self, fct):
+        while True:
+            try:
+                f = self.files.pop(0)
+                fct(f)
+            except IndexError:
+                # Ok as expected . No items left
+                break
+        pass
+
+    # ..................................................................................................................
     def resetCounters(self):
         self.files = []
         self.filesCount = 0
@@ -170,6 +256,7 @@ class YaptClass(object):
             print('..Deleted  : %d' % self.fileDeleted)
         print()
 
+    # ..................................................................................................................
     def noCheck(self, action: str) -> None:
         pass
 
@@ -189,6 +276,7 @@ class YaptClass(object):
 
         pass
 
+    # ..................................................................................................................
     @staticmethod
     def getExifTimeStamp(file: str) -> typing.Optional[datetime.datetime]:
         try:
@@ -216,9 +304,9 @@ class YaptClass(object):
         # 20100101_1930_2010_01_01_19h30_IMG_2647
         d = os.path.dirname(file)
         f = os.path.basename(file)
-        f = f.replace('hpnx', 'HPNX')
-        f = f.replace('IMG', 'Img').replace('img', 'Img')
-        x = self.validNTFSCharsRegEx.sub('_', f)
+        x = f.replace('hpnx', 'HPNX')
+        x = x.replace('IMG', 'Img').replace('img', 'Img')
+        x = self.validNTFSCharsRegEx.sub('_', x)
         res = self.yyymmddhhmmRegEx.search(x)
         if res:
             p = res.group(1) + res.group(2) + res.group(3) + '_' + res.group(4) + res.group(5)
@@ -237,10 +325,11 @@ class YaptClass(object):
             return os.path.join(d, x)
         t = self.getExifTimeStamp(file)
         if t:
-            x = t.strftime('%Y%m%d_%H%M') + '_' + f
+            x = t.strftime('%Y%m%d_%H%M') + '_' + x
             return os.path.join(d, x)
         return
 
+    # ..................................................................................................................
     def getTargetFileName(self, file: str) -> str:
         f = os.path.basename(file)
         if self.flat == 0:
@@ -263,99 +352,13 @@ class YaptClass(object):
         n = os.path.join(self.target, 'errors', f)
         return n
 
-    # ..................................................................................................................
-    def loadSource(self, source: str) -> bool:
-        self.printTitle('loading %s ...' % source)
-        self.source = os.path.realpath(source)
-        elapsed_time = time.time()
-        self.resetCounters()
-        if source:
-            if os.path.exists(source):
-                if os.path.isfile(source):
-                    self.files.append(source)
-                elif os.path.isdir(source):
-                    if self.recursive:
-                        for r, d, f in os.walk(source):
-                            for file in f:
-                                name, ext = os.path.splitext(file)
-                                if ext and ext.lower()[1:] in PIL_FORMATS:
-                                    ff = os.path.join(r, file)
-                                    self.filesSize += os.path.getsize(ff)
-                                    self.files.append(ff)
-                                    self.filesCount += 1
-                    else:
-                        for file in os.listdir(source):
-                            name, ext = os.path.splitext(file)
-                            if ext and ext.lower()[1:] in PIL_FORMATS:
-                                ff = os.path.join(source, file)
-                                self.filesSize += os.path.getsize(ff)
-                                self.files.append(ff)
-                                self.filesCount += 1
-            else:
-                print('Error: Path %s not exists!' % source, file=sys.stderr)
-                exit(-1)
-
-        if not self.files:
-            print('Error: No images found', file=sys.stderr)
-            exit(-1)
-
-        print('%d files %s' % (self.filesCount, humanize.naturalsize(self.filesSize)))
-        elapsed_time = time.time() - elapsed_time
-        print('in %.3f sec\n' % elapsed_time)
-        return True
-
-    # ..................................................................................................................
-    def processFiles(self, action: str) -> None:
-        self.printActionStart(action)
-        elapsed_time = time.time()
-        before_action = {
-            YAPT_Action_list: self.noCheck,
-            YAPT_Action_ren2date: self.noCheck,
-            YAPT_Action_optimize: self.checkTarget,
-            YAPT_Action_thumbnails: self.checkTarget,
-        }
-        actions = {
-            YAPT_Action_list: self.listFile,
-            YAPT_Action_ren2date: self.ren2date,
-            YAPT_Action_optimize: self.listFile,
-            YAPT_Action_thumbnails: self.createThumbnail,
-        }
-        self.newfilesCount = self.filesCount
-        self.newfilesSize = self.filesSize
-        before_action[action](action)
-        fct = actions[action]
-        if self.threads:
-            threads = []
-            for i in range(self.threads):
-                threads.append(threading.Thread(target=self.thread_processFiles, args=(fct,)))
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-        else:
-            self.thread_processFiles(fct)
-        elapsed_time = time.time() - elapsed_time
-        print('in %.3f sec\n' % elapsed_time)
-        self.printActionEnd(action)
-        pass
-
-    def thread_processFiles(self, fct):
-        while True:
-            try:
-                f = self.files.pop(0)
-                fct(f)
-            except IndexError:
-                # Ok as expected . No items left
-                break
-        pass
-
     # ...................................................................................................................
     def listFile(self, file: str):
         self.success.append(file)
         pass
 
     # ...................................................................................................................
-    def ren2date(self, file: str):
+    def rename(self, file: str):
         n = self.getCorrectFileName(file)
         if not n:
             self.errors.append(YaptError(file, 'Invalid FileName'))
@@ -430,7 +433,7 @@ def main():
     parser.add_argument('-x', '--threads', dest='threads', type=int, default=5, help='set threads count')
     parser.add_argument('-s', '--source', type=str, default='/home/cdc/Photos/', help='Root Dir to process')
     parser.add_argument('-t', '--target', type=str, default='/home/cdc/yapt', help='Destination Folder')
-    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_ren2date,
+    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_rename,
                         help='action to perform')
     args = parser.parse_args()
 
