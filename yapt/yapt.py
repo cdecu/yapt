@@ -11,10 +11,11 @@ import threading
 import os
 import re
 import sys
-import humanize
 import pathlib
 import datetime
+import typing
 from PIL import Image
+import humanize
 import piexif
 
 __author__ = 'cdc'
@@ -68,7 +69,7 @@ def decode(path: str) -> str:
     return path.encode(sys.stdout.encoding, 'ignore').decode(sys.stdout.encoding)
 
 
-def decodeExifDateTime(value: str) -> object:
+def decodeExifDateTime(value: str) -> typing.Optional[datetime.datetime]:
     """
     utility fct to encode/decode
     """
@@ -77,7 +78,7 @@ def decodeExifDateTime(value: str) -> object:
         d = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
         return d
     except ValueError:
-        return None
+        return
 
 
 # ......................................................................................................................
@@ -133,7 +134,8 @@ class YaptClass(object):
         self.newfilesCount = 0
         self.newfilesSize = 0
 
-    def printTitle(self, title: str) -> None:
+    @staticmethod
+    def printTitle(title: str) -> None:
         print(title)
         print('-' * 1 * (len(title)))
 
@@ -188,11 +190,11 @@ class YaptClass(object):
         pass
 
     @staticmethod
-    def getExifTimeStamp(file: str) -> datetime:
+    def getExifTimeStamp(file: str) -> typing.Optional[datetime.datetime]:
         try:
             exif_dict = piexif.load(file)
         except ValueError:
-            return None
+            return
         if piexif.ImageIFD.DateTime in exif_dict["0th"]:
             s = exif_dict["0th"].pop(piexif.ImageIFD.DateTime)
             return decodeExifDateTime(str(s, 'utf-8'))
@@ -207,9 +209,9 @@ class YaptClass(object):
         #         print(ifd, piexif.TAGS[ifd][tag]["name"], exif_dict[ifd][tag])
         # print('****', file)
         # print('****', exif_dict)
-        return None
+        return
 
-    def getCorrectFileName(self, file: str) -> str:
+    def getCorrectFileName(self, file: str) -> typing.Optional[str]:
         # 20160712_1600_IMG_1692.jpg
         # 20100101_1930_2010_01_01_19h30_IMG_2647
         d = os.path.dirname(file)
@@ -237,7 +239,7 @@ class YaptClass(object):
         if t:
             x = t.strftime('%Y%m%d_%H%M') + '_' + f
             return os.path.join(d, x)
-        return None
+        return
 
     def getTargetFileName(self, file: str) -> str:
         f = os.path.basename(file)
@@ -354,40 +356,39 @@ class YaptClass(object):
 
     # ...................................................................................................................
     def ren2date(self, file: str):
-        newFileName = self.getCorrectFileName(file)
-
-        if not newFileName:
+        n = self.getCorrectFileName(file)
+        if not n:
             self.errors.append(YaptError(file, 'Invalid FileName'))
             return
 
-        if newFileName == file:
+        if n == file:
             return
 
         self.fileToRename += 1
         # self.onlytest = True
 
         # Delete Existing !
-        if os.path.exists(newFileName):
+        if os.path.exists(n):
             if not self.onlytest:
                 try:
                     os.remove(file)
                     self.success.append('%s >> Deleted' % file)
                 except IOError as Err:
-                    self.errors.append(YaptError(file, 'Delete I/O error({0}): {1}' % (Err.errno, Err.strerror)))
+                    self.errors.append(YaptError(file, 'Delete I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
             else:
-                self.success.append('%s >> replace existing %s' % (file, newFileName))
+                self.success.append('%s >> replace existing %s' % (file, n))
 
         # Rename to yyyymm...
         if not self.onlytest:
             try:
-                os.rename(file, newFileName)
+                os.rename(file, n)
                 self.success.append('%s >> Renamed' % file)
                 self.fileToRename -= 1
                 self.fileRenamed += 1
             except IOError as Err:
-                self.errors.append(YaptError(file, 'Rename I/O error({0}): {1}' % (Err.errno, Err.strerror)))
+                self.errors.append(YaptError(file, 'Rename I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
         else:
-            self.success.append('%s >> to be renamed to %s' % (file, os.path.basename(newFileName)))
+            self.success.append('%s >> to be renamed to %s' % (file, os.path.basename(n)))
 
     # ..................................................................................................................
     def createThumbnail(self, file: str) -> None:
