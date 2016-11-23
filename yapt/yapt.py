@@ -24,12 +24,14 @@ __version__ = '0.0.1'
 
 YAPT_Action_list = 'list'
 YAPT_Action_rename = 'rename'
+YAPT_Action_touch = 'touch'
 YAPT_Action_optimize = 'optimize'
 YAPT_Action_thumbnails = 'thumbnails'
 
 YAPT_Actions = (
     YAPT_Action_list,
     YAPT_Action_rename,
+    YAPT_Action_touch,
     YAPT_Action_optimize,
     YAPT_Action_thumbnails,
 )
@@ -169,12 +171,14 @@ class YaptClass(object):
         before_action = {
             YAPT_Action_list: self.noCheck,
             YAPT_Action_rename: self.noCheck,
+            YAPT_Action_touch: self.noCheck,
             YAPT_Action_optimize: self.checkTarget,
             YAPT_Action_thumbnails: self.checkTarget,
         }
         actions = {
             YAPT_Action_list: self.listFile,
             YAPT_Action_rename: self.rename,
+            YAPT_Action_touch: self.touch,
             YAPT_Action_optimize: self.listFile,
             YAPT_Action_thumbnails: self.createThumbnail,
         }
@@ -226,10 +230,11 @@ class YaptClass(object):
         print('-' * 1 * (len(title)))
 
     def printActionStart(self, action: str) -> None:
-        title = 'Start ' + action
-        if self.onlytest:
-            title += ' OnlyTest'
+        title = 'Start [%s]' % action
         title += ' %d File(s)' % self.filesCount
+        title += ' * %d thread(s)' % self.threads
+        if self.onlytest:
+            title += ' * OnlyTest *'
         print(title)
         print('-' * 1 * (len(title)))
 
@@ -297,6 +302,21 @@ class YaptClass(object):
         #         print(ifd, piexif.TAGS[ifd][tag]["name"], exif_dict[ifd][tag])
         # print('****', file)
         # print('****', exif_dict)
+        return
+
+    def getFileDateTime(self, file: str) -> typing.Optional[datetime.datetime]:
+        f = os.path.basename(file)
+        t = self.getExifTimeStamp(file)
+        if t:
+            return t
+        res = self.yyymmddhhmmRegEx.search(f)
+        if res:
+            try:
+                t = datetime.datetime(year=int(res.group(1)), month=int(res.group(2)), day=int(res.group(3)),
+                                      hour=int(res.group(4)), minute=int(res.group(5)))
+                return t
+            except ValueError:
+                pass
         return
 
     def getCorrectFileName(self, file: str) -> typing.Optional[str]:
@@ -367,9 +387,6 @@ class YaptClass(object):
         if n == file:
             return
 
-        self.fileToRename += 1
-        # self.onlytest = True
-
         # Delete Existing !
         if os.path.exists(n):
             if not self.onlytest:
@@ -386,12 +403,37 @@ class YaptClass(object):
             try:
                 os.rename(file, n)
                 self.success.append('%s >> Renamed' % file)
-                self.fileToRename -= 1
                 self.fileRenamed += 1
             except IOError as Err:
                 self.errors.append(YaptError(file, 'Rename I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
+                self.fileToRename += 1
         else:
             self.success.append('%s >> to be renamed to %s' % (file, os.path.basename(n)))
+            self.fileToRename += 1
+
+    # ...................................................................................................................
+    def touch(self, file: str):
+        t = self.getFileDateTime(file)
+        if not t:
+            self.errors.append(YaptError(file, 'Can find TimeStamp'))
+            self.fileToRename += 1
+            return
+        res = os.stat(file)
+        tt = time.mktime(t.timetuple())
+        if res.st_mtime == tt:
+            # ok time set
+            return
+        if self.onlytest:
+            self.success.append('%s >> %s' % (file, time.strftime("%Y%m%d %H:%M", time.localtime(tt))))
+            self.fileToRename += 1
+            return
+        try:
+            os.utime(file, (tt, tt))
+            self.fileRenamed += 1
+        except IOError as Err:
+            self.errors.append(YaptError(file, 'Touch I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
+            self.fileToRename += 1
+        return
 
     # ..................................................................................................................
     def createThumbnail(self, file: str) -> None:
@@ -423,9 +465,9 @@ def main():
         prog="yapt.py",
         description=__doc__,
         epilog="\nbe carefull and good lock !\n",
-        formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=80)
+        formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=35)
     )
-    parser.add_argument('-y', '--onlytest', dest='onlytest', help='dry run', action='store_true')
+    parser.add_argument('-y', '--run', dest='onlytest', help='real run(onlytest by default)', action='store_false')
     parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', default=True,
                         help='recursive scan subfolders')
     parser.add_argument('-f', '--flat', dest='flat', type=int, default=1,
@@ -433,8 +475,8 @@ def main():
     parser.add_argument('-x', '--threads', dest='threads', type=int, default=5, help='set threads count')
     parser.add_argument('-s', '--source', type=str, default='/home/cdc/Photos/', help='Root Dir to process')
     parser.add_argument('-t', '--target', type=str, default='/home/cdc/yapt', help='Destination Folder')
-    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_rename,
-                        help='action to perform')
+    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_touch,
+                        help='Action to perform')
     args = parser.parse_args()
 
     yatp = YaptClass(source=args.source,
