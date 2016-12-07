@@ -28,3 +28,21 @@ done
 # Sources
 https://github.com/novoid/filetags/
 https://github.com/Bobsans/image-optimizer
+
+# Todos
+- create an account on PyPi production and test sites
+- create ~/.pypirc file 
+- add to rootprj/setup.cfg [metadata]
+- add to rootprj/setup.py classifiers=
+- create a tag on github according __version__
+- Publish to PyPi
+``` bash
+python setup.py register -r pypitest
+python setup.py sdist upload -r pypitest
+python setup.py register -r pypi
+python setup.py sdist upload -r pypi
+```
+- Test our package 
+``` bash
+pip install pysimplib
+```

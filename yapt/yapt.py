@@ -117,9 +117,11 @@ class YaptClass(object):
         self.filesSize = 0
         self.success = []
         self.errors = []
-        self.fileToRename = 0
-        self.fileRenamed = 0
-        self.fileDeleted = 0
+        self.filesResized = 0
+        self.filesOptimized = 0
+        self.filesToRename = 0
+        self.filesRenamed = 0
+        self.filesDeleted = 0
         self.newfilesCount = 0
         self.newfilesSize = 0
 
@@ -169,9 +171,9 @@ class YaptClass(object):
         self.printActionStart(action)
         elapsed_time = time.time()
         before_action = {
-            YAPT_Action_list: self.noCheck,
-            YAPT_Action_rename: self.noCheck,
-            YAPT_Action_touch: self.noCheck,
+            YAPT_Action_list: self.dummyStub,
+            YAPT_Action_rename: self.dummyStub,
+            YAPT_Action_touch: self.dummyStub,
             YAPT_Action_optimize: self.checkTarget,
             YAPT_Action_thumbnails: self.checkTarget,
         }
@@ -181,6 +183,13 @@ class YaptClass(object):
             YAPT_Action_touch: self.touch,
             YAPT_Action_optimize: self.listFile,
             YAPT_Action_thumbnails: self.createThumbnail,
+        }
+        after_action = {
+            YAPT_Action_list: self.dummyStub,
+            YAPT_Action_rename: self.dummyStub,
+            YAPT_Action_touch: self.dummyStub,
+            YAPT_Action_optimize: self.dummyStub,
+            YAPT_Action_thumbnails: self.dummyStub,
         }
         self.newfilesCount = self.filesCount
         self.newfilesSize = self.filesSize
@@ -196,6 +205,7 @@ class YaptClass(object):
                 thread.join()
         else:
             self.thread_processFiles(fct)
+        after_action[action](action)
         elapsed_time = time.time() - elapsed_time
         print('in %.3f sec\n' % elapsed_time)
         self.printActionEnd(action)
@@ -218,9 +228,11 @@ class YaptClass(object):
         self.filesSize = 0
         self.success = []
         self.errors = []
-        self.fileToRename = 0
-        self.fileRenamed = 0
-        self.fileDeleted = 0
+        self.filesResized = 0
+        self.filesOptimized = 0
+        self.filesToRename = 0
+        self.filesRenamed = 0
+        self.filesDeleted = 0
         self.newfilesCount = 0
         self.newfilesSize = 0
 
@@ -253,16 +265,20 @@ class YaptClass(object):
 
         print('Result\n------')
         print('..File(s)  : %d Size %s' % (self.newfilesCount, humanize.naturalsize(self.newfilesSize)))
-        if self.fileToRename:
-            print('..ToRename : %d' % self.fileToRename)
-        if self.fileRenamed:
-            print('..Renamed  : %d' % self.fileRenamed)
-        if self.fileDeleted:
-            print('..Deleted  : %d' % self.fileDeleted)
+        if self.filesToRename:
+            print('..ToRename : %d' % self.filesToRename)
+        if self.filesRenamed:
+            print('..Renamed  : %d' % self.filesRenamed)
+        if self.filesDeleted:
+            print('..Deleted  : %d' % self.filesDeleted)
+        if self.filesResized:
+            print('..Resized  : %d' % self.filesResized)
+        if self.filesOptimized:
+            print('..Optimized: %d' % self.filesOptimized)
         print()
 
     # ..................................................................................................................
-    def noCheck(self, action: str) -> None:
+    def dummyStub(self, action: str) -> None:
         pass
 
     def checkTarget(self, action: str) -> None:
@@ -273,15 +289,27 @@ class YaptClass(object):
             if not os.path.isdir(self.target):
                 raise ValueError('Please select a valid target dir for ' + action)
         else:
-            os.mkdir(self.target)
+            os.makedirs(self.target, exist_ok=True)
 
         errs = os.path.join(self.target, 'errors')
         if not os.path.exists(errs):
-            os.mkdir(errs)
+            os.makedirs(errs, exist_ok=True)
 
+        for f in self.files:
+            t = self.getTargetFileName(f)
+            n = os.path.dirname(t)
+            if not os.path.exists(n):
+                os.makedirs(n, exist_ok=True)
         pass
 
     # ..................................................................................................................
+    @staticmethod
+    def getExifOrientation(img) -> typing.Optional[int]:
+        if "exif" in img.info:
+            exif_dict = piexif.load(img.info["exif"])
+            if piexif.ImageIFD.Orientation in exif_dict["0th"]:
+                return exif_dict["0th"].pop(piexif.ImageIFD.Orientation)
+
     @staticmethod
     def getExifTimeStamp(file: str) -> typing.Optional[datetime.datetime]:
         try:
@@ -305,10 +333,10 @@ class YaptClass(object):
         return
 
     def getFileDateTime(self, file: str) -> typing.Optional[datetime.datetime]:
-        f = os.path.basename(file)
         t = self.getExifTimeStamp(file)
         if t:
             return t
+        f = os.path.basename(file)
         res = self.yyymmddhhmmRegEx.search(f)
         if res:
             try:
@@ -356,14 +384,13 @@ class YaptClass(object):
             n = os.path.join(self.target, f)
             return n
         p = os.path.dirname(file)
+        p = os.path.realpath(p)
         p = p.replace(self.source, '')
         parts = pathlib.PurePath(p).parts
         lvls = self.flat + 1 if self.flat + 1 < len(parts) else len(parts)
         n = self.target
         for i in range(1, lvls):
             n = os.path.join(n, parts[i])
-        if not os.path.exists(n):
-            os.mkdir(n)
         n = os.path.join(n, f)
         return n
 
@@ -403,20 +430,20 @@ class YaptClass(object):
             try:
                 os.rename(file, n)
                 self.success.append('%s >> Renamed' % file)
-                self.fileRenamed += 1
+                self.filesRenamed += 1
             except IOError as Err:
                 self.errors.append(YaptError(file, 'Rename I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
-                self.fileToRename += 1
+                self.filesToRename += 1
         else:
             self.success.append('%s >> to be renamed to %s' % (file, os.path.basename(n)))
-            self.fileToRename += 1
+            self.filesToRename += 1
 
     # ...................................................................................................................
     def touch(self, file: str):
         t = self.getFileDateTime(file)
         if not t:
             self.errors.append(YaptError(file, 'Can find TimeStamp'))
-            self.fileToRename += 1
+            self.filesToRename += 1
             return
         res = os.stat(file)
         tt = time.mktime(t.timetuple())
@@ -425,31 +452,54 @@ class YaptClass(object):
             return
         if self.onlytest:
             self.success.append('%s >> %s' % (file, time.strftime("%Y%m%d %H:%M", time.localtime(tt))))
-            self.fileToRename += 1
+            self.filesToRename += 1
             return
         try:
             os.utime(file, (tt, tt))
-            self.fileRenamed += 1
+            self.filesRenamed += 1
         except IOError as Err:
             self.errors.append(YaptError(file, 'Touch I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
-            self.fileToRename += 1
+            self.filesToRename += 1
         return
 
     # ..................................................................................................................
     def createThumbnail(self, file: str) -> None:
         n = self.getTargetFileName(file)
         try:
+            # Create thumbnail
             with Image.open(file) as img:
                 if (img.width > self.thumbnailSize[0]) or (img.height > self.thumbnailSize[1]):
-                    # Resize
+                    # Resize exif will be lost !
+                    # exif_bytes = piexif.dump(exif_dict) and newimg.save(filename, exif=exif_bytes)
+                    o = self.getExifOrientation(img)
                     img_format = img.format
                     newimg = img.copy()
                     newimg.thumbnail(self.thumbnailSize, Image.LANCZOS)
+                    if o == 3:
+                        newimg = newimg.transpose(Image.ROTATE_180)
+                    elif o == 4:
+                        newimg = newimg.transpose(Image.ROTATE_180)
+                    elif o == 5:
+                        newimg = newimg.transpose(Image.ROTATE_270)
+                    elif o == 6:
+                        newimg = newimg.transpose(Image.ROTATE_270)
+                    elif o == 7:
+                        newimg = newimg.transpose(Image.ROTATE_90)
+                    elif o == 8:
+                        newimg = newimg.transpose(Image.ROTATE_90)
                     newimg.format = img_format
                     newimg.save(n, optimize=True)
+                    self.filesResized += 1
                 else:
                     # keep as is
+                    self.filesOptimized += 1
                     img.save(n, optimize=True)
+            # Touch File
+            t = self.getFileDateTime(file)
+            if t:
+                tt = time.mktime(t.timetuple())
+                os.utime(n, (tt, tt))
+            # Inc counters
             self.newfilesSize -= os.path.getsize(file)
             self.newfilesSize += os.path.getsize(n)
         except Exception as ex:
@@ -470,12 +520,12 @@ def main():
     parser.add_argument('-y', '--run', dest='onlytest', help='real run(onlytest by default)', action='store_false')
     parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', default=True,
                         help='recursive scan subfolders')
-    parser.add_argument('-f', '--flat', dest='flat', type=int, default=1,
+    parser.add_argument('-f', '--flat', dest='flat', type=int, default=2,
                         help='flat target tree level')
     parser.add_argument('-x', '--threads', dest='threads', type=int, default=5, help='set threads count')
-    parser.add_argument('-s', '--source', type=str, default='/home/cdc/Photos/', help='Root Dir to process')
+    parser.add_argument('-s', '--source', type=str, default='/home/cdc/Images/', help='Root Dir to process')
     parser.add_argument('-t', '--target', type=str, default='/home/cdc/yapt', help='Destination Folder')
-    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_touch,
+    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_thumbnails,
                         help='Action to perform')
     args = parser.parse_args()
 
