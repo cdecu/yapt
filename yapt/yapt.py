@@ -28,13 +28,15 @@ YAPT_Action_touch = 'touch'
 YAPT_Action_optimize = 'optimize'
 YAPT_Action_thumbnails = 'thumbnails'
 
+YAPT_Default_Action = YAPT_Action_thumbnails
+
 YAPT_Actions = (
     YAPT_Action_list,
     YAPT_Action_rename,
     YAPT_Action_touch,
     YAPT_Action_optimize,
     YAPT_Action_thumbnails,
-)
+    )
 
 PIL_FORMATS = [
     'bmp', 'eps', 'gif', 'j2c', 'j2k', 'jp2', 'jpc', 'jpe', 'jpeg', 'jpf', 'jpg', 'jpx', 'mpo', 'pbm',
@@ -164,62 +166,9 @@ class YaptClass(object):
         print('%d files %s' % (self.filesCount, humanize.naturalsize(self.filesSize)))
         elapsed_time = time.time() - elapsed_time
         print('in %.3f sec\n' % elapsed_time)
-        return True
-
-    # ..................................................................................................................
-    def processFiles(self, action: str) -> None:
-        self.printActionStart(action)
-        elapsed_time = time.time()
-        before_action = {
-            YAPT_Action_list: self.dummyStub,
-            YAPT_Action_rename: self.dummyStub,
-            YAPT_Action_touch: self.dummyStub,
-            YAPT_Action_optimize: self.checkTarget,
-            YAPT_Action_thumbnails: self.checkTarget,
-        }
-        actions = {
-            YAPT_Action_list: self.listFile,
-            YAPT_Action_rename: self.rename,
-            YAPT_Action_touch: self.touch,
-            YAPT_Action_optimize: self.listFile,
-            YAPT_Action_thumbnails: self.createThumbnail,
-        }
-        after_action = {
-            YAPT_Action_list: self.dummyStub,
-            YAPT_Action_rename: self.dummyStub,
-            YAPT_Action_touch: self.dummyStub,
-            YAPT_Action_optimize: self.dummyStub,
-            YAPT_Action_thumbnails: self.dummyStub,
-        }
         self.newfilesCount = self.filesCount
         self.newfilesSize = self.filesSize
-        before_action[action](action)
-        fct = actions[action]
-        if self.threads:
-            threads = []
-            for i in range(self.threads):
-                threads.append(threading.Thread(target=self.thread_processFiles, args=(fct,)))
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-        else:
-            self.thread_processFiles(fct)
-        after_action[action](action)
-        elapsed_time = time.time() - elapsed_time
-        print('in %.3f sec\n' % elapsed_time)
-        self.printActionEnd(action)
-        pass
-
-    def thread_processFiles(self, fct):
-        while True:
-            try:
-                f = self.files.pop(0)
-                fct(f)
-            except IndexError:
-                # Ok as expected . No items left
-                break
-        pass
+        return True
 
     # ..................................................................................................................
     def resetCounters(self):
@@ -277,29 +226,14 @@ class YaptClass(object):
             print('..Optimized: %d' % self.filesOptimized)
         print()
 
-    # ..................................................................................................................
-    def dummyStub(self, action: str) -> None:
-        pass
-
-    def checkTarget(self, action: str) -> None:
-        if not self.target:
-            raise ValueError('Please select a valid target')
-
-        if os.path.exists(self.target):
-            if not os.path.isdir(self.target):
-                raise ValueError('Please select a valid target dir for ' + action)
-        else:
-            os.makedirs(self.target, exist_ok=True)
-
-        errs = os.path.join(self.target, 'errors')
-        if not os.path.exists(errs):
-            os.makedirs(errs, exist_ok=True)
-
-        for f in self.files:
-            t = self.getTargetFileName(f)
-            n = os.path.dirname(t)
-            if not os.path.exists(n):
-                os.makedirs(n, exist_ok=True)
+    def thread_processFiles(self, fct):
+        while True:
+            try:
+                f = self.files.pop(0)
+                fct(f)
+            except IndexError:
+                # Ok as expected . No items left
+                break
         pass
 
     # ..................................................................................................................
@@ -377,35 +311,38 @@ class YaptClass(object):
             return os.path.join(d, x)
         return
 
-    # ..................................................................................................................
-    def getTargetFileName(self, file: str) -> str:
+    def getOnlyTestTarget(self, file: str) -> str:
         f = os.path.basename(file)
-        if self.flat == 0:
-            n = os.path.join(self.target, f)
-            return n
-        p = os.path.dirname(file)
-        p = os.path.realpath(p)
-        p = p.replace(self.source, '')
-        parts = pathlib.PurePath(p).parts
-        lvls = self.flat + 1 if self.flat + 1 < len(parts) else len(parts)
-        n = self.target
-        for i in range(1, lvls):
-            n = os.path.join(n, parts[i])
-        n = os.path.join(n, f)
+        n = os.path.join(self.target,'test', f)
         return n
 
-    def getTargetErrorFileName(self, file: str) -> str:
-        f = os.path.basename(file)
-        n = os.path.join(self.target, 'errors', f)
-        return n
+    def checkOnlyTestTarget(self) -> None:
+        if not self.target:
+            raise ValueError('Please select a valid target')
+
+        if os.path.exists(self.target):
+            if not os.path.isdir(self.target):
+                raise ValueError('Please select a valid target dir')
+        else:
+            os.makedirs(self.target, exist_ok=True)
+
+        errs = os.path.join(self.target, 'test')
+        if not os.path.exists(errs):
+            os.makedirs(errs, exist_ok=True)
 
     # ...................................................................................................................
     def listFile(self, file: str):
         self.success.append(file)
         pass
 
+    def listFiles(self) -> None:
+        self.printActionStart(YAPT_Action_list)
+        self.thread_processFiles(self.listFile)
+        self.printActionEnd(YAPT_Action_list)
+        pass
+
     # ...................................................................................................................
-    def rename(self, file: str):
+    def renameFile(self, file: str):
         n = self.getCorrectFileName(file)
         if not n:
             self.errors.append(YaptError(file, 'Invalid FileName'))
@@ -437,9 +374,25 @@ class YaptClass(object):
         else:
             self.success.append('%s >> to be renamed to %s' % (file, os.path.basename(n)))
             self.filesToRename += 1
+        pass
+
+    def renameFiles(self) -> None:
+        self.printActionStart(YAPT_Action_rename)
+        if self.threads:
+            threads = []
+            for i in range(self.threads):
+                threads.append(threading.Thread(target=self.thread_processFiles, args=(self.renameFile,)))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        else:
+            self.thread_processFiles(self.renameFile)
+        self.printActionEnd(YAPT_Action_rename)
+        pass
 
     # ...................................................................................................................
-    def touch(self, file: str):
+    def touchFile(self, file: str):
         t = self.getFileDateTime(file)
         if not t:
             self.errors.append(YaptError(file, 'Can find TimeStamp'))
@@ -460,11 +413,106 @@ class YaptClass(object):
         except IOError as Err:
             self.errors.append(YaptError(file, 'Touch I/O error({0}): {1}'.format(Err.errno, Err.strerror)))
             self.filesToRename += 1
-        return
+        pass
+
+    def touchFiles(self) -> None:
+        self.printActionStart(YAPT_Action_touch)
+        if self.threads:
+            threads = []
+            for i in range(self.threads):
+                threads.append(threading.Thread(target=self.thread_processFiles, args=(self.touchFile,)))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        else:
+            self.thread_processFiles(self.touchFile)
+        self.printActionEnd(YAPT_Action_touch)
+        pass
+
+    # ...................................................................................................................
+    def optimizeFile(self, file: str):
+        try:
+            # target
+            n = self.getCorrectFileName(file)
+            if self.onlytest:
+                n = self.getOnlyTestTarget(n)
+            # Optimize File
+            with Image.open(file) as img:
+                img.save(n, optimize=True)
+            # Touch File
+            t = self.getFileDateTime(n)
+            if t:
+                tt = time.mktime(t.timetuple())
+                os.utime(n, (tt, tt))
+            # delete original
+            if (not self.onlytest)and(n != file):
+                os.remove(file)
+        except Exception as ex:
+            self.errors.append(YaptError(file, ex))
+        pass
+
+    def optimizeFiles(self) -> None:
+        self.printActionStart(YAPT_Action_optimize)
+        self.checkOnlyTestTarget()
+        if self.threads:
+            threads = []
+            for i in range(self.threads):
+                threads.append(threading.Thread(target=self.thread_processFiles, args=(self.optimizeFile,)))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        else:
+            self.thread_processFiles(self.optimizeFile)
+        self.printActionEnd(YAPT_Action_optimize)
+        pass
 
     # ..................................................................................................................
+    def getThumbnailTarget(self, file: str) -> str:
+        f = os.path.basename(file)
+        if self.flat == 0:
+            n = os.path.join(self.target, f)
+            return n
+        p = os.path.dirname(file)
+        p = os.path.realpath(p)
+        p = p.replace(self.source, '')
+        parts = pathlib.PurePath(p).parts
+        lvls = self.flat + 1 if self.flat + 1 < len(parts) else len(parts)
+        n = self.target
+        for i in range(1, lvls):
+            n = os.path.join(n, parts[i])
+        n = os.path.join(n, f)
+        return n
+
+    def getThumbnailErrorTarget(self, file: str) -> str:
+        f = os.path.basename(file)
+        n = os.path.join(self.target, 'errors', f)
+        return n
+
+    def checkThumbnailsTarget(self) -> None:
+        if not self.target:
+            raise ValueError('Please select a valid target')
+
+        if os.path.exists(self.target):
+            if not os.path.isdir(self.target):
+                raise ValueError('Please select a valid thumbnails target dir')
+        else:
+            os.makedirs(self.target, exist_ok=True)
+
+        errs = os.path.join(self.target, 'errors')
+        if not os.path.exists(errs):
+            os.makedirs(errs, exist_ok=True)
+
+        for f in self.files:
+            t = self.getThumbnailTarget(f)
+            n = os.path.dirname(t)
+            if not os.path.exists(n):
+                os.makedirs(n, exist_ok=True)
+        pass
+
     def createThumbnail(self, file: str) -> None:
-        n = self.getTargetFileName(file)
+        n = self.getThumbnailTarget(file)
         try:
             # Create thumbnail
             with Image.open(file) as img:
@@ -504,10 +552,41 @@ class YaptClass(object):
             self.newfilesSize += os.path.getsize(n)
         except Exception as ex:
             self.errors.append(YaptError(file, ex))
-            n = self.getTargetErrorFileName(file)
+            n = self.getThumbnailErrorTarget(file)
             shutil.copy(file, n)
             self.newfilesCount -= 1
+        pass
 
+    def createThumbnails(self) -> None:
+        self.printActionStart(YAPT_Action_thumbnails)
+        self.checkThumbnailsTarget()
+        if self.threads:
+            threads = []
+            for i in range(self.threads):
+                threads.append(threading.Thread(target=self.thread_processFiles, args=(self.createThumbnail,)))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        else:
+            self.thread_processFiles(self.createThumbnail)
+        self.printActionEnd(YAPT_Action_thumbnails)
+        pass
+
+    # ..................................................................................................................
+    def executeAction(self, action: str) -> None:
+        actionsFct = {
+            YAPT_Action_list: self.listFiles,
+            YAPT_Action_rename: self.renameFiles,
+            YAPT_Action_touch: self.touchFiles,
+            YAPT_Action_optimize: self.optimizeFiles,
+            YAPT_Action_thumbnails: self.createThumbnails,
+            }
+        elapsed_time = time.time()
+        actionsFct[action]()
+        elapsed_time = time.time() - elapsed_time
+        print('in %.3f sec\n' % elapsed_time)
+        pass
 
 # ......................................................................................................................
 def main():
@@ -520,12 +599,12 @@ def main():
     parser.add_argument('-y', '--run', dest='onlytest', help='real run(onlytest by default)', action='store_false')
     parser.add_argument('-r', '--recursive', dest='recursive', action='store_true', default=True,
                         help='recursive scan subfolders')
-    parser.add_argument('-f', '--flat', dest='flat', type=int, default=2,
+    parser.add_argument('-f', '--flat', dest='flat', type=int, default=1,
                         help='flat target tree level')
     parser.add_argument('-x', '--threads', dest='threads', type=int, default=5, help='set threads count')
     parser.add_argument('-s', '--source', type=str, default='/home/cdc/Images/', help='Root Dir to process')
     parser.add_argument('-t', '--target', type=str, default='/home/cdc/yapt', help='Destination Folder')
-    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Action_thumbnails,
+    parser.add_argument('-a', '--action', dest='action', choices=YAPT_Actions, default=YAPT_Default_Action,
                         help='Action to perform')
     args = parser.parse_args()
 
@@ -540,7 +619,7 @@ def main():
         print('ByeBye')
         exit(-1)
 
-    yatp.processFiles(args.action)
+    yatp.executeAction(args.action)
 
 
 if __name__ == "__main__":
