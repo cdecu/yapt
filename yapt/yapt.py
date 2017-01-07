@@ -5,18 +5,21 @@ Photo Tools
 """
 
 import argparse
-import shutil
-import time
-import threading
-import os
-import re
-import sys
-import pathlib
 import datetime
+import os
+import pathlib
+import re
+import shutil
+import sys
+import threading
+import time
 import typing
+
 import humanize
 import piexif
 from PIL import Image
+
+from yapt.yaptUtils import decode, decodeExifDateTime
 
 __author__ = 'cdc'
 __email__ = 'cdc@decumont.be'
@@ -64,26 +67,6 @@ class YaptError:
 
     def __str__(self):
         return '%s [%s: %s]' % (self.file, self.type, self.message)
-
-
-def decode(path: str) -> str:
-    """
-    utility fct to encode/decode
-    """
-    return path.encode(sys.stdout.encoding, 'ignore').decode(sys.stdout.encoding)
-
-
-def decodeExifDateTime(value: str) -> typing.Optional[datetime.datetime]:
-    """
-    utility fct to encode/decode
-    """
-    try:
-        # return path.encode(sys.stdout.encoding, 'ignore').decode(sys.stdout.encoding)
-        d = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
-        return d
-    except ValueError:
-        return
-
 
 # ......................................................................................................................
 class YaptClass(object):
