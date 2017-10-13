@@ -19,7 +19,7 @@ import humanize
 import piexif
 from PIL import Image
 
-from yapt.yaptUtils import decode, decodeExifDateTime
+from yaptUtils import decode, decodeExifDateTime
 
 __author__ = 'cdc'
 __email__ = 'cdc@decumont.be'
@@ -39,7 +39,7 @@ YAPT_Actions = (
     YAPT_Action_touch,
     YAPT_Action_optimize,
     YAPT_Action_thumbnails,
-    )
+)
 
 PIL_FORMATS = [
     'bmp', 'eps', 'gif', 'j2c', 'j2k', 'jp2', 'jpc', 'jpe', 'jpeg', 'jpf', 'jpg', 'jpx', 'mpo', 'pbm',
@@ -67,6 +67,7 @@ class YaptError:
 
     def __str__(self):
         return '%s [%s: %s]' % (self.file, self.type, self.message)
+
 
 # ......................................................................................................................
 class YaptClass(object):
@@ -204,7 +205,7 @@ class YaptClass(object):
         if self.filesDeleted:
             print('..Deleted  : %d' % self.filesDeleted)
         if self.filesResized:
-            print('..Resized  : %d' % self.filesResized)
+            print('..Resized  : %d in %s' % (self.filesResized, self.target))
         if self.filesOptimized:
             print('..Optimized: %d' % self.filesOptimized)
         print()
@@ -296,7 +297,7 @@ class YaptClass(object):
 
     def getOnlyTestTarget(self, file: str) -> str:
         f = os.path.basename(file)
-        n = os.path.join(self.target,'test', f)
+        n = os.path.join(self.target, 'test', f)
         return n
 
     def checkOnlyTestTarget(self) -> None:
@@ -429,7 +430,7 @@ class YaptClass(object):
                 tt = time.mktime(t.timetuple())
                 os.utime(n, (tt, tt))
             # delete original
-            if (not self.onlytest)and(n != file):
+            if (not self.onlytest) and (n != file):
                 os.remove(file)
         except Exception as ex:
             self.errors.append(YaptError(file, ex))
@@ -564,12 +565,13 @@ class YaptClass(object):
             YAPT_Action_touch: self.touchFiles,
             YAPT_Action_optimize: self.optimizeFiles,
             YAPT_Action_thumbnails: self.createThumbnails,
-            }
+        }
         elapsed_time = time.time()
         actionsFct[action]()
         elapsed_time = time.time() - elapsed_time
         print('in %.3f sec\n' % elapsed_time)
         pass
+
 
 # ......................................................................................................................
 def main():
