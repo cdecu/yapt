@@ -1,6 +1,8 @@
 # Photo Tools
 Yet another photo tools
 
+# Read The Docs
+- https://readthedocs.org/projects/piexif/downloads/pdf/latest/
 
 # Replace old scripts
 

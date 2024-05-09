@@ -92,3 +92,4 @@ ENV/
 
 # intellj
 .idea
+.run

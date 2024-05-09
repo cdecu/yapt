@@ -6,6 +6,7 @@ Photo Tools
 
 import argparse
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -15,11 +16,13 @@ import threading
 import time
 import typing
 
+import PIL.ExifTags
 import humanize
 import piexif
-from PIL import Image
+from PIL import Image, ExifTags
+import exiftool
 
-from yaptUtils import decode, decodeExifDateTime
+from yaptUtils import decode, decodeExifDateTime, exif_jsonbytes, exif_metadata2dict, exif_decode
 
 __author__ = 'cdc'
 __email__ = 'cdc@decumont.be'
@@ -30,8 +33,9 @@ YAPT_Action_rename = 'rename'
 YAPT_Action_touch = 'touch'
 YAPT_Action_optimize = 'optimize'
 YAPT_Action_thumbnails = 'thumbnails'
+YAPT_Action_rebuild_exif = 'rebuild_exif'
 
-YAPT_Default_Action = YAPT_Action_thumbnails
+YAPT_Default_Action = YAPT_Action_rebuild_exif
 
 YAPT_Actions = (
     YAPT_Action_list,
@@ -39,14 +43,13 @@ YAPT_Actions = (
     YAPT_Action_touch,
     YAPT_Action_optimize,
     YAPT_Action_thumbnails,
+    YAPT_Action_rebuild_exif,
 )
 
 PIL_FORMATS = [
     'bmp', 'eps', 'gif', 'j2c', 'j2k', 'jp2', 'jpc', 'jpe', 'jpeg', 'jpf', 'jpg', 'jpx', 'mpo', 'pbm',
     'pcx', 'pgm', 'png', 'ppm', 'tga',
 ]
-
-BORDER_Chars = '┌┐┘└─│┴├┬┤╷┼'
 
 ILLEGAL_NTFS_CHARS = "[<>:/\\|?*\"]|[\0-\31]"
 
@@ -91,11 +94,15 @@ class YaptClass(object):
 
         # Prepare regex
         self.validNTFSCharsRegEx = re.compile(ILLEGAL_NTFS_CHARS)
-        self.yyymmddhhmmRegEx = re.compile('(\d{4})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
-        self.yyymmddRegEx = re.compile('(\d{4})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
+        self.yyymmddhhmmRegEx = re.compile(r"(\d{4})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)")
+        self.yyymmddRegEx = re.compile(r'(\d{4})\D*(\d{2})\D*(\d{2})[-_ ]*(.*)')
 
         # default thumbnailSize (width, height)
         self.thumbnailSize = (800, 600,)
+
+        # default new exif tags
+        self.newExifTagsJsonFile = "new-exif-tags.json"
+        self.newExifTags = {}
 
         # reset Counters
         self.files = []
@@ -234,6 +241,7 @@ class YaptClass(object):
             exif_dict = piexif.load(file)
         except ValueError:
             return
+        # print(exif_dict)
         if piexif.ImageIFD.DateTime in exif_dict["0th"]:
             s = exif_dict["0th"].pop(piexif.ImageIFD.DateTime)
             return decodeExifDateTime(str(s, 'utf-8'))
@@ -293,6 +301,10 @@ class YaptClass(object):
         if t:
             x = t.strftime('%Y%m%d_%H%M') + '_' + x
             return os.path.join(d, x)
+
+        # TODO Try with exiftool cmd line tools.
+        # with exiftool.ExifToolHelper() as et:
+
         return
 
     def getOnlyTestTarget(self, file: str) -> str:
@@ -558,6 +570,135 @@ class YaptClass(object):
         pass
 
     # ..................................................................................................................
+    def prepareRebuildExifs(self, args) -> bool:
+        # todo should get new exif tags cmd line args
+        self.newExifTagsJsonFile = "exif4nikon.json"
+        fn = self.newExifTagsJsonFile
+        confFileName = pathlib.Path(fn)
+        if confFileName.exists():
+            self.newExifTagsJsonFile = fn
+            return True
+
+        d = os.path.dirname(os.path.realpath(__file__))
+        fn = os.path.join(d, self.newExifTagsJsonFile)
+        confFileName = pathlib.Path(fn)
+        if confFileName.exists():
+            self.newExifTagsJsonFile = fn
+            return True
+
+        fn = os.path.join("~", self.newExifTagsJsonFile)
+        confFileName = pathlib.Path(fn)
+        if confFileName.exists():
+            self.newExifTagsJsonFile = fn
+            return True
+
+        fn = os.path.join("~/Src/yapt/", self.newExifTagsJsonFile)
+        confFileName = pathlib.Path(fn)
+        if confFileName.exists():
+            self.newExifTagsJsonFile = fn
+            return True
+
+        self.newExifTagsJsonFile = ""
+        return True
+
+    def loadNewExifTags(self) -> None:
+
+        self.newExifTags = {}
+        if self.newExifTagsJsonFile:
+            confFileName = pathlib.Path(self.newExifTagsJsonFile)
+            if confFileName.exists():
+                # print('Loading %s' % confFileName)
+                try:
+                    with open(confFileName, "r") as f:
+                        conf = json.load(f)
+                        # print('Using %s as default new exif tags' % self.newExifTagsJsonFile)
+                        self.newExifTags = conf
+                        return
+                except Exception as ex:
+                    pass
+
+        # print('Using default new exif tags')
+        self.newExifTags = {}
+        pass
+
+    def rebuildExif(self, file: str) -> None:
+        m = self.newExifTags.copy()
+        try:
+            # keep any existing exif data
+            exif_raw = piexif.load(file)
+            if exif_raw:
+                # Take(Merge) some tags into new ExifTags
+                print(exif_raw)
+                for ifd in ("0th", "Exif"):
+                    ifd_raw = exif_raw.get(ifd, {})
+                    print(ifd, ifd_raw)
+                    if ifd_raw:
+                        # Check Convert exif tag to name, so it can be merged into newExifTags
+                        ifd_data = {PIL.ExifTags.TAGS[k]: v for k, v in ifd_raw.items() if k and v}
+                        # print(ifd_data)
+                        # print(m[ifd])
+                        m[ifd] = ifd_data | m[ifd]
+                        # print(m[ifd])
+
+            # Update new Exif Tags with EXIF Tools metadata
+            with (exiftool.ExifToolHelper() as et):
+                metadata = et.get_metadata(file)
+                exif_metadata2dict(metadata, m)
+
+            # Insert new exif
+            exif_bytes = exif_jsonbytes(m)
+            piexif.insert(exif_bytes, file)
+
+            # Touch File
+            t = self.getFileDateTime(file)
+            if t:
+                tt = time.mktime(t.timetuple())
+                os.utime(file, (tt, tt))
+                # print(tt)
+
+            # Rename file
+            n = self.getCorrectFileName(file)
+            if n != file:
+                os.rename(file, n)
+                # print(n)
+
+            # Inc counters
+            self.filesRenamed += 1
+            pass
+        except Exception as ex:
+            self.errors.append(YaptError(file, ex))
+        pass
+
+    def rebuildExifs(self) -> None:
+        self.printActionStart(YAPT_Action_rebuild_exif)
+        self.loadNewExifTags()
+        if self.threads:
+            threads = []
+            for i in range(self.threads):
+                threads.append(threading.Thread(target=self.thread_processFiles, args=(self.rebuildExif,)))
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        else:
+            self.thread_processFiles(self.rebuildExif)
+        self.printActionEnd(YAPT_Action_rebuild_exif)
+        pass
+
+    # ..................................................................................................................
+    def prepareAction(self, args) -> bool:
+        actionsFct = {
+            YAPT_Action_list: 0,
+            YAPT_Action_rename: 0,
+            YAPT_Action_touch: 0,
+            YAPT_Action_optimize: 0,
+            YAPT_Action_thumbnails: 0,
+            YAPT_Action_rebuild_exif: self.prepareRebuildExifs
+        }
+        if actionsFct[args.action]:
+            return actionsFct[args.action](args)
+        return True
+
     def executeAction(self, action: str) -> None:
         actionsFct = {
             YAPT_Action_list: self.listFiles,
@@ -565,6 +706,7 @@ class YaptClass(object):
             YAPT_Action_touch: self.touchFiles,
             YAPT_Action_optimize: self.optimizeFiles,
             YAPT_Action_thumbnails: self.createThumbnails,
+            YAPT_Action_rebuild_exif: self.rebuildExifs,
         }
         elapsed_time = time.time()
         actionsFct[action]()
@@ -601,6 +743,10 @@ def main():
                      threads=args.threads
                      )
     if not yatp.loadSource(args.source):
+        print('ByeBye')
+        exit(-1)
+
+    if not yatp.prepareAction(args):
         print('ByeBye')
         exit(-1)
 
