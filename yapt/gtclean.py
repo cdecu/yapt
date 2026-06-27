@@ -17,12 +17,11 @@ import re
 import sys
 import typing
 
-import humanize
 import piexif
 
 __author__ = 'cdc'
 __email__ = 'cdc@decumont.be'
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
 PIL_FORMATS = {
     'bmp', 'eps', 'gif', 'j2c', 'j2k', 'jp2', 'jpc', 'jpe', 'jpeg',
@@ -31,18 +30,12 @@ PIL_FORMATS = {
     'mkv', '3gp', 'm4v',
 }
 
-# Noms de fichiers JSON d'album générés par Google Takeout selon la langue de l'interface
+# Noms de fichiers JSON d'album générés par Google Takeout selon la langue
 ALBUM_JSON_NAMES = {
-    'métadonnées.json',   # français
-    'metadonnees.json',   # français sans accent (variante)
-    'metadata.json',      # anglais
-    'metadaten.json',     # allemand
-    'metadatos.json',     # espagnol
-    'metadati.json',      # italien
-    'метаданные.json',    # russe
+    'métadonnées.json', 'metadonnees.json', 'metadata.json',
+    'metadaten.json', 'metadatos.json', 'metadati.json', 'метаданные.json',
 }
 
-# Patterns Google Takeout pour les noms de fichiers édités / suppléments
 EDITED_SUFFIXES = re.compile(
     r'(-edited|-bewerkt|-modifié|-modifie|-modificato|-editado|'
     r'-redimensionné|-redimensionne|-redimensioniert|-ridimensionato|'
@@ -50,15 +43,15 @@ EDITED_SUFFIXES = re.compile(
     re.IGNORECASE
 )
 
-# Fichiers déjà nommés YYYYMMDD_HHMMSS[…] — ne jamais renommer
 ALREADY_DATED_RE = re.compile(r'^\d{8}_\d{6}')
-
-# Préfixe temporaire Google Takeout : ~tmpXXX_NOM → NOM~tmpXXX
 TMP_PREFIX_RE = re.compile(r'^(~tmp[^_]*)_(.+)$', re.IGNORECASE)
+# Google Takeout suffixe le JSON avec .supplemental-xxx quand le nom est trop long
+SUPPLEMENTAL_RE = re.compile(r'^(.+\.[a-zA-Z0-9]+)\.supplemental[-.].*$', re.IGNORECASE)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 def decode_safe(text: str) -> str:
+    # TODO: sys.stdout.encoding peut être None si stdout est redirigé → crash
     return text.encode(sys.stdout.encoding, 'ignore').decode(sys.stdout.encoding)
 
 
@@ -67,15 +60,10 @@ def timestamp_to_datetime(ts: typing.Union[str, int, float]) -> datetime.datetim
 
 
 def is_album_json(json_path: str, meta: dict) -> bool:
-    """
-    Retourne True si ce JSON est un fichier de métadonnées d'album Google Takeout,
-    c'est-à-dire si :
-      - son nom (insensible à la casse) est dans ALBUM_JSON_NAMES, OU
-      - son `title` correspond exactement au nom du dossier qui le contient.
-    """
     fname = os.path.basename(json_path).lower()
     if fname in ALBUM_JSON_NAMES:
         return True
+    # TODO: title peut être une liste → bool(title) est True mais title == dir_name est False
     title = meta.get('title', '')
     dir_name = os.path.basename(os.path.dirname(json_path))
     return bool(title) and title == dir_name
@@ -83,14 +71,7 @@ def is_album_json(json_path: str, meta: dict) -> bool:
 
 def find_media_for_json(json_path: str, title: str) -> typing.Optional[str]:
     """
-    Cherche le fichier média correspondant à un JSON sidecar Google Takeout.
-
-    Stratégies (dans l'ordre) :
-      1. Correspondance directe avec `title`.
-      2. Déduction depuis le nom du JSON (photo.jpg.json → photo.jpg).
-      3. Titre ~tmpXXX_NOM → fichier NOM~tmpXXX (renommé lors d'un run précédent).
-      4. Correspondance par préfixe tronqué (Google tronque les noms longs).
-      5. Fichiers édités : IMG_1234-edited.jpg → JSON titre IMG_1234.jpg.
+    5 stratégies pour trouver le média correspondant à un JSON sidecar.
     """
     directory = os.path.dirname(json_path)
 
@@ -100,21 +81,37 @@ def find_media_for_json(json_path: str, title: str) -> typing.Optional[str]:
         if os.path.isfile(candidate):
             return candidate
 
+    # 1b — title avec caractères spéciaux sanitisés par Takeout (' → _)
+    if title:
+        sanitized = re.sub(r"['\"]", '_', title)
+        if sanitized != title:
+            candidate = os.path.join(directory, sanitized)
+            if os.path.isfile(candidate):
+                return candidate
+
     # 2 — déduction depuis le nom du JSON (photo.jpg.json → photo.jpg)
     json_name = os.path.basename(json_path)
     if json_name.lower().endswith('.json'):
-        media_name = json_name[:-5]
-        candidate = os.path.join(directory, media_name)
+        base = json_name[:-5]
+        candidate = os.path.join(directory, base)
         if os.path.isfile(candidate):
             return candidate
+
+    # 2b — JSON supplemental: nom.ext.supplemental-xxx.json → nom.ext
+    #      Google Takeout utilise ce suffixe quand le nom de fichier est trop long
+    if json_name.lower().endswith('.json'):
+        m = SUPPLEMENTAL_RE.match(json_name[:-5])
+        if m:
+            candidate = os.path.join(directory, m.group(1))
+            if os.path.isfile(candidate):
+                return candidate
 
     # 3 — titre ~tmpXXX_NOM.ext → fichier déjà renommé NOM~tmpXXX.ext
     if title:
         stem, ext = os.path.splitext(title)
         m = TMP_PREFIX_RE.match(stem)
         if m:
-            transformed = f'{m.group(2)}{m.group(1)}{ext}'
-            candidate = os.path.join(directory, transformed)
+            candidate = os.path.join(directory, f'{m.group(2)}{m.group(1)}{ext}')
             if os.path.isfile(candidate):
                 return candidate
 
@@ -126,6 +123,7 @@ def find_media_for_json(json_path: str, title: str) -> typing.Optional[str]:
             for fname in os.listdir(directory):
                 if fname.lower().endswith(ext_lower):
                     fstem = os.path.splitext(fname)[0]
+                    # TODO: fstem.startswith(stem) génère des faux positifs, ex: "photo" matche "photo2"
                     if stem.startswith(fstem) or fstem.startswith(stem):
                         fpath = os.path.join(directory, fname)
                         if os.path.isfile(fpath):
@@ -133,9 +131,10 @@ def find_media_for_json(json_path: str, title: str) -> typing.Optional[str]:
         except OSError:
             pass
 
-    # 5 — fichier édité : chercher title sans extension + suffixe -edited + ext
+    # 5 — fichier édité
     if title:
         stem, ext = os.path.splitext(title)
+        # TODO: seul '-edited' est testé ; les autres suffixes de EDITED_SUFFIXES sont ignorés
         candidate = os.path.join(directory, f'{stem}-edited{ext}')
         if os.path.isfile(candidate):
             return candidate
@@ -149,18 +148,12 @@ def load_takeout_json(json_path: str) -> dict:
 
 
 def apply_exif_timestamp(media_path: str, dt: datetime.datetime, onlytest: bool = False) -> bool:
-    """
-    Applique le timestamp dans les balises EXIF DateTimeOriginal / DateTimeDigitized.
-    Ne traite que les JPEG/TIFF (formats supportés par piexif).
-    Retourne True uniquement si les balises ont effectivement changé.
-    """
     ext = os.path.splitext(media_path)[1].lower().lstrip('.')
     if ext not in ('jpg', 'jpeg', 'tif', 'tiff'):
         return False
     try:
         exif_dict = piexif.load(media_path)
         dt_str = dt.strftime('%Y:%m:%d %H:%M:%S').encode('ascii')
-        # Vérifier si les valeurs sont déjà correctes
         already = (
             exif_dict['Exif'].get(piexif.ExifIFD.DateTimeOriginal) == dt_str
             and exif_dict['Exif'].get(piexif.ExifIFD.DateTimeDigitized) == dt_str
@@ -179,7 +172,6 @@ def apply_exif_timestamp(media_path: str, dt: datetime.datetime, onlytest: bool 
 
 
 def _gps_exif_to_float(gps_dict: dict) -> typing.Optional[tuple[float, float, float]]:
-    """Décode lat/lon/alt depuis un dict GPS EXIF. Retourne None si incomplet."""
     try:
         def dms(v):
             return v[0][0]/v[0][1] + v[1][0]/(v[1][1]*60) + v[2][0]/(v[2][1]*3600)
@@ -202,10 +194,6 @@ def _gps_exif_to_float(gps_dict: dict) -> typing.Optional[tuple[float, float, fl
 
 def apply_gps_exif(media_path: str, lat: float, lon: float, alt: float = 0.0,
                    onlytest: bool = False) -> bool:
-    """
-    Insère les coordonnées GPS dans les balises EXIF.
-    Retourne True uniquement si les valeurs ont effectivement changé (±0.0001°, ±1m).
-    """
     ext = os.path.splitext(media_path)[1].lower().lstrip('.')
     if ext not in ('jpg', 'jpeg', 'tif', 'tiff'):
         return False
@@ -239,7 +227,6 @@ def apply_gps_exif(media_path: str, lat: float, lon: float, alt: float = 0.0,
 
 
 def _decode_xp_str(raw) -> str:
-    """Décode un tag XP* (piexif le retourne en tuple d'ints ou bytes) en string."""
     try:
         if isinstance(raw, tuple):
             raw = bytes(raw)
@@ -249,13 +236,6 @@ def _decode_xp_str(raw) -> str:
 
 
 def apply_people_exif(media_path: str, names: list[str], onlytest: bool = False) -> bool:
-    """
-    Écrit les noms de personnes dans deux balises EXIF Windows (UTF-16LE) :
-      - XPSubject  (0x9C9F) : sujet/personnes de la photo
-      - XPKeywords (0x9C9E) : mots-clés (digiKam, Lightroom…)
-    Les noms sont séparés par '; '.
-    Retourne True uniquement si au moins une balise a effectivement changé.
-    """
     if not names:
         return False
     ext = os.path.splitext(media_path)[1].lower().lstrip('.')
@@ -265,7 +245,6 @@ def apply_people_exif(media_path: str, names: list[str], onlytest: bool = False)
         exif_dict = piexif.load(media_path)
         kw_str = '; '.join(names)
         encoded = (kw_str + '\x00').encode('utf-16-le')
-        # Comparer les strings décodées pour éviter les faux-positifs liés aux null-terminators
         existing_subject = _decode_xp_str(exif_dict['0th'].get(piexif.ImageIFD.XPSubject, b''))
         existing_keywords = _decode_xp_str(exif_dict['0th'].get(piexif.ImageIFD.XPKeywords, b''))
         if existing_subject == kw_str and existing_keywords == kw_str:
@@ -280,25 +259,15 @@ def apply_people_exif(media_path: str, names: list[str], onlytest: bool = False)
 
 
 def apply_description_exif(media_path: str, description: str, origin: str,
-                           onlytest: bool = False) -> bool:
-    """
-    Écrit la description dans :
-      - ImageDescription (0x010E) : ASCII standard
-      - XPComment        (0x9C9C) : UTF-16LE (Windows/digiKam)
-    Si `origin` est fourni (ex: 'ANDROID_PHONE'), il est ajouté entre crochets.
-    Retourne True uniquement si la valeur a changé.
-    """
+                            onlytest: bool = False) -> bool:
     if not description and not origin:
         return False
     ext = os.path.splitext(media_path)[1].lower().lstrip('.')
     if ext not in ('jpg', 'jpeg', 'tif', 'tiff'):
         return False
     try:
-        full = description
-        if origin:
-            full = f'{description} [{origin}]'.strip() if description else f'[{origin}]'
+        full = f'{description} [{origin}]'.strip() if (description and origin) else (description or f'[{origin}]')
         exif_dict = piexif.load(media_path)
-        # ImageDescription peut être bytes ou tuple selon piexif
         raw_desc = exif_dict['0th'].get(piexif.ImageIFD.ImageDescription, b'')
         if isinstance(raw_desc, tuple):
             raw_desc = bytes(raw_desc)
@@ -307,6 +276,8 @@ def apply_description_exif(media_path: str, description: str, origin: str,
         if existing_desc == full and existing_comment == full:
             return False
         exif_dict['0th'][piexif.ImageIFD.ImageDescription] = (full + '\x00').encode('ascii', errors='replace')
+        # TODO: encode ASCII avec errors='replace' → accents perdus ; à chaque run la valeur
+        #       diffère de l'originale et le tag est réécrit inutilement
         exif_dict['0th'][piexif.ImageIFD.XPComment] = (full + '\x00').encode('utf-16-le')
         if not onlytest:
             piexif.insert(piexif.dump(exif_dict), media_path)
@@ -316,12 +287,6 @@ def apply_description_exif(media_path: str, description: str, origin: str,
 
 
 def apply_rating_exif(media_path: str, favorited: bool, onlytest: bool = False) -> bool:
-    """
-    Écrit le rating EXIF (0x4746) :
-      - favorited=True  → Rating 5
-      - favorited=False → Rating 0 (pas de dégradation si déjà renseigné)
-    Retourne True uniquement si la valeur a changé.
-    """
     if not favorited:
         return False
     ext = os.path.splitext(media_path)[1].lower().lstrip('.')
@@ -329,11 +294,9 @@ def apply_rating_exif(media_path: str, favorited: bool, onlytest: bool = False) 
         return False
     try:
         exif_dict = piexif.load(media_path)
-        rating = 5
-        existing = exif_dict['0th'].get(piexif.ImageIFD.Rating)
-        if existing == rating:
+        if exif_dict['0th'].get(piexif.ImageIFD.Rating) == 5:
             return False
-        exif_dict['0th'][piexif.ImageIFD.Rating] = rating
+        exif_dict['0th'][piexif.ImageIFD.Rating] = 5
         if not onlytest:
             piexif.insert(piexif.dump(exif_dict), media_path)
         return True
@@ -342,7 +305,6 @@ def apply_rating_exif(media_path: str, favorited: bool, onlytest: bool = False) 
 
 
 def _extract_origin(google_photos_origin: dict) -> str:
-    """Extrait le type d'appareil depuis googlePhotosOrigin."""
     if not google_photos_origin:
         return ''
     try:
@@ -350,7 +312,6 @@ def _extract_origin(google_photos_origin: dict) -> str:
         device = mobile.get('deviceType', '') or mobile.get('deviceFolder', {}).get('localFolderName', '')
         if device:
             return device
-        # Autres sources connues
         if 'webUpload' in google_photos_origin:
             return 'WEB_UPLOAD'
         if 'backupPhotoUpload' in google_photos_origin:
@@ -361,10 +322,6 @@ def _extract_origin(google_photos_origin: dict) -> str:
 
 
 def set_file_mtime(path: str, dt: datetime.datetime, onlytest: bool = False) -> bool:
-    """
-    Corrige la date de modification du fichier.
-    Retourne True uniquement si le mtime a effectivement changé (à la seconde près).
-    """
     ts = dt.timestamp()
     if int(os.stat(path).st_mtime) == int(ts):
         return False
@@ -374,9 +331,6 @@ def set_file_mtime(path: str, dt: datetime.datetime, onlytest: bool = False) -> 
 
 
 def safe_rename(src: str, dst: str) -> None:
-    """
-    Renomme src → dst en évitant les collisions (ajoute un suffixe numérique).
-    """
     if src == dst:
         return
     if not os.path.exists(dst):
@@ -392,14 +346,31 @@ def safe_rename(src: str, dst: str) -> None:
         counter += 1
 
 
+# ── Compteurs (par dossier et globaux) ────────────────────────────────────────
+class Counters:
+    __slots__ = (
+        'processed', 'no_media', 'album_loaded',
+        'exif_fixed', 'gps_fixed', 'people_fixed',
+        'description_fixed', 'rating_fixed', 'mtime_fixed',
+        'renamed', 'already_dated', 'json_deleted', 'empty_dirs',
+        'json_sidecar',
+    )
+
+    def __init__(self):
+        for s in self.__slots__:
+            setattr(self, s, 0)
+
+    def __iadd__(self, other: 'Counters') -> 'Counters':
+        for s in self.__slots__:
+            setattr(self, s, getattr(self, s) + getattr(other, s))
+        return self
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 class TakeoutCleaner:
     """
-    Nettoie un export Google Takeout :
-      - applique les métadonnées JSON sur les médias
-      - renomme selon la date
-      - supprime les JSON sidecar
-      - supprime les dossiers vides et les fichiers non-média
+    Nettoie un export Google Takeout dossier par dossier pour éviter les
+    collisions de noms entre répertoires différents.
     """
 
     def __init__(
@@ -431,129 +402,95 @@ class TakeoutCleaner:
         self.delete_json = delete_json
         self.delete_empty_dirs = delete_empty_dirs
         self.verbose = verbose
+        self.curr_dir: str = ""
+        self.curr_counters: Counters = Counters()
+        self.curr_files: list[str] = []
 
-        self.album_json_files: list[str] = []   # JSON d'album (title == dirname)
-        self.json_files: list[str] = []          # JSON sidecar individuels
-        self.album_meta: dict[str, dict] = {}    # dir → métadonnées d'album (défauts)
-
-        self.count_processed = 0
-        self.count_no_media = 0
-        self.count_album_loaded = 0
-        self.count_exif_fixed = 0
-        self.count_gps_fixed = 0
-        self.count_people_fixed = 0
-        self.count_description_fixed = 0
-        self.count_rating_fixed = 0
-        self.count_mtime_fixed = 0
-        self.count_renamed = 0
-        self.count_already_dated = 0
-        self.count_json_deleted = 0
-        self.count_empty_dirs = 0
+        self.totals = Counters()
         self.errors: list[str] = []
 
-    # ── Scan ──────────────────────────────────────────────────────────────────
-    def scan(self) -> None:
-        print(f'Scanning {self.source} …')
-        if self.recursive:
-            roots = os.walk(self.source)
-        else:
-            roots = [(self.source, [], os.listdir(self.source))]
-
-        for root, dirs, files in roots:
-            for fname in files:
-                if os.path.splitext(fname)[1].lower() != '.json':
-                    continue
-                fpath = os.path.join(root, fname)
-                try:
-                    meta = load_takeout_json(fpath)
-                except Exception:
-                    meta = {}
-                if is_album_json(fpath, meta):
-                    self.album_json_files.append(fpath)
-                else:
-                    self.json_files.append(fpath)
-
-        print(f'  {len(self.album_json_files)} JSON d\'album  (métadonnées de dossier)')
-        print(f'  {len(self.json_files)} JSON sidecar (métadonnées individuelles)')
-
-    # ── Passe 1 : chargement des JSON d'album ────────────────────────────────
-    def _load_album_json(self, json_path: str) -> None:
-        """
-        Charge les métadonnées d'un JSON d'album dans self.album_meta[directory].
-        Ces valeurs servent de DÉFAUTS pour tous les médias du dossier ;
-        elles seront surchargées par les JSON individuels en passe 2.
-        """
-        try:
-            meta = load_takeout_json(json_path)
-        except Exception as e:
-            self.errors.append(f'Album JSON parse error {json_path}: {e}')
-            return
-
-        directory = os.path.dirname(json_path)
-        self.album_meta[directory] = meta
-        self.count_album_loaded += 1
-
-        dir_name = os.path.basename(directory)
-        desc = meta.get('description', '')
-        geo = meta.get('geoData') or {}
-        lat, lon = geo.get('latitude', 0.0), geo.get('longitude', 0.0)
-        geo_str = f'  GPS({lat:.4f},{lon:.4f})' if lat or lon else ''
-        # Always Print album !
-        print(f'  album  [{decode_safe(dir_name)}]{geo_str}  {decode_safe(desc)}')
-
-        # Supprimer le JSON d'album
-        if self.delete_json:
-            if not self.onlytest:
-                try:
-                    os.remove(json_path)
-                except OSError as e:
-                    self.errors.append(f'Cannot delete {json_path}: {e}')
-            self.count_json_deleted += 1
-
-    # ── Passe 2a : groupement des JSON sidecar par média ─────────────────────
-    def _group_sidecar_json(self) -> dict[str, tuple[list[dict], list[str]]]:
-        """
-        Charge tous les JSON sidecar, résout leur média et les groupe :
-          { media_path: ([meta, …], [json_path, …]) }
-        Plusieurs JSON peuvent pointer vers le même média.
-        """
-        groups: dict[str, tuple[list[dict], list[str]]] = {}
-        for json_path in self.json_files:
-            try:
-                meta = load_takeout_json(json_path)
-            except Exception as e:
-                self.errors.append(f'JSON parse error {json_path}: {e}')
+    # ── 1.1 : charger le JSON d'album d'un dossier ───────────────────────────
+    def _load_album_json_for_dir(self) -> dict:
+        """Charge et retourne le meta d'album du dossier, ou {} si absent."""
+        for fname in self.curr_files:
+            if os.path.splitext(fname)[1].lower() != '.json':
                 continue
-            title: str = meta.get('title', '')
-            media_path = find_media_for_json(json_path, title)
+            fpath = os.path.join(self.curr_dir, fname)
+            try:
+                meta = load_takeout_json(fpath)
+            except Exception:
+                meta = {}
+            if is_album_json(fpath, meta):
+                self.curr_counters.album_loaded += 1
+                dir_name = os.path.basename(self.curr_dir)
+                desc = meta.get('description', '')
+                geo = meta.get('geoData') or {}
+                lat, lon = geo.get('latitude', 0.0), geo.get('longitude', 0.0)
+                geo_str = f'  GPS({lat:.4f},{lon:.4f})' if lat or lon else ''
+                # print(f'  album  [{decode_safe(dir_name)}]{geo_str}  {decode_safe(desc)}')
+                if self.delete_json:
+                    if not self.onlytest:
+                        try:
+                            os.remove(fpath)
+                        except OSError as e:
+                            self.errors.append(f'Cannot delete {fpath}: {e}')
+                    self.curr_counters.json_deleted += 1
+                return meta
+        return {}
+
+    # ── 1.2 : charger et grouper les JSON sidecar d'un dossier ───────────────
+    def _group_sidecar_for_dir(self, album: dict) -> dict[str, tuple[list[dict], list[str]]]:
+        """
+        Pour chaque JSON sidecar du dossier, trouve le média et groupe les metas.
+        Retourne { media_path: ([meta,…], [json_path,…]) }
+        """
+        c = self.curr_counters
+        groups: dict[str, tuple[list[dict], list[str]]] = {}
+        for fname in self.curr_files:
+            if os.path.splitext(fname)[1].lower() != '.json':
+                continue
+            fpath = os.path.join(self.curr_dir, fname)
+            # Ignorer les JSON d'album (déjà traités)
+            try:
+                meta = load_takeout_json(fpath)
+            except Exception as e:
+                self.errors.append(f'JSON parse error {fpath}: {e}')
+                continue
+            if is_album_json(fpath, meta):
+                continue
+            c.json_sidecar += 1
+            raw_title = meta.get('title', '')
+            title: str = raw_title if isinstance(raw_title, str) else (raw_title[0] if isinstance(raw_title, list) and raw_title else str(raw_title))
+            media_path = find_media_for_json(fpath, title)
             if not media_path:
-                self.count_no_media += 1
-                self.errors.append(f'Média introuvable pour {os.path.basename(json_path)} (title={title!r})')
+                c.no_media += 1
+                hint = (
+                    ' — le média est peut-être dans un autre dossier (photo partagée entre plusieurs albums)'
+                    if self.recursive else
+                    ' — le média est peut-être dans un autre dossier (photo partagée entre plusieurs albums) ; essayez sans --no-recursive'
+                )
+                self.errors.append(f'Média introuvable pour {fname} (title={title!r}){hint}')
                 continue
             ext = os.path.splitext(media_path)[1].lower().lstrip('.')
             if ext not in PIL_FORMATS:
-                self.count_no_media += 1
+                # TODO: no_media est trompeur ici : le média est trouvé mais son format
+                #       n'est pas supporté ; utiliser un compteur dédié
+                c.no_media += 1
                 continue
             if media_path not in groups:
                 groups[media_path] = ([], [])
             groups[media_path][0].append(meta)
-            groups[media_path][1].append(json_path)
+            groups[media_path][1].append(fpath)
         return groups
 
+    # ── merge ────────────────────────────────────────────────────────────────
     @staticmethod
     def _merge_meta(metas: list[dict], album: dict) -> dict:
-        """
-        Fusionne plusieurs metas JSON + défauts d'album en une seule dict.
-        Règles :
-          - photoTakenTime : première valeur non-nulle parmi les metas, puis album
-          - geoDataExif    : préféré à geoData (GPS enregistré vs interpolé)
-          - geoData        : fallback, premier avec lat/lon non-nuls
-          - people         : union des noms dédoublonnée
-          - title          : premier meta individuel
-        """
         merged: dict = {}
         for m in metas:
             if m.get('title'):
+                # TODO: m['title'] peut être une liste → crash dans _process_media_group
+                #       (os.path.splitext sur une liste)
                 merged['title'] = m['title']
                 break
         for key in ('photoTakenTime', 'creationTime'):
@@ -561,47 +498,44 @@ class TakeoutCleaner:
                 if src.get(key):
                     merged.setdefault(key, src[key])
                     break
-        # geoDataExif prioritaire sur geoData
         for key in ('geoDataExif', 'geoData'):
             for src in (*metas, album):
                 v = src.get(key)
                 if v and (v.get('latitude', 0.0) != 0.0 or v.get('longitude', 0.0) != 0.0):
                     merged.setdefault('geoData', v)
                     break
-        seen_names: set[str] = set()
-        all_people = []
+        seen: set[str] = set()
+        people = []
         for src in (*metas, album):
             for p in src.get('people', []):
                 name = p.get('name', '')
-                if name and name not in seen_names:
-                    seen_names.add(name)
-                    all_people.append(p)
-        if all_people:
-            merged['people'] = all_people
-        # description : première non-vide
+                if name and name not in seen:
+                    seen.add(name)
+                    people.append(p)
+        if people:
+            merged['people'] = people
         for src in (*metas, album):
             if src.get('description'):
                 merged.setdefault('description', src['description'])
                 break
-        # favorited : True si l'un des metas le dit
         merged['favorited'] = any(src.get('favorited') for src in (*metas, album))
-        # googlePhotosOrigin : premier non-nul
         for src in (*metas, album):
             if src.get('googlePhotosOrigin'):
                 merged.setdefault('googlePhotosOrigin', src['googlePhotosOrigin'])
                 break
         return merged
 
-    # ── Passe 2b : application sur un média (metas fusionnées) ───────────────
-    def process_media_group(self, media_path: str, metas: list[dict], json_paths: list[str]) -> None:
-        self.count_processed += 1
-        album = self.album_meta.get(os.path.dirname(json_paths[0]), {})
+    # ── 1.3 : traiter un groupe média ────────────────────────────────────────
+    def _process_media_group(self, media_path: str, metas: list[dict],
+                              json_paths: list[str], album: dict) -> None:
+        c = self.curr_counters
+        c.processed += 1
         meta = self._merge_meta(metas, album)
         title: str = meta.get('title', '')
         if len(metas) > 1 and self.verbose:
             print(f'  merge {len(metas)} JSON → {decode_safe(os.path.basename(media_path))}')
 
-        # ── Timestamp ─────────────────────────────────────────────────────────
+        # Timestamp
         dt: typing.Optional[datetime.datetime] = None
         photo_taken = meta.get('photoTakenTime') or meta.get('creationTime')
         if photo_taken:
@@ -612,9 +546,9 @@ class TakeoutCleaner:
 
         if dt and self.fix_exif:
             if apply_exif_timestamp(media_path, dt, self.onlytest):
-                self.count_exif_fixed += 1
+                c.exif_fixed += 1
 
-        # ── GPS (déjà fusionné dans meta) ──────────────────────────────────────
+        # GPS
         geo = meta.get('geoData')
         if geo and self.fix_gps:
             lat = geo.get('latitude', 0.0)
@@ -622,39 +556,38 @@ class TakeoutCleaner:
             alt = geo.get('altitude', 0.0)
             if lat != 0.0 or lon != 0.0:
                 if apply_gps_exif(media_path, lat, lon, alt, self.onlytest):
-                    self.count_gps_fixed += 1
+                    c.gps_fixed += 1
 
-        # ── People ────────────────────────────────────────────────────────────
+        # People
         raw_people = meta.get('people') or []
         if raw_people and self.fix_people:
             names = [p['name'] for p in raw_people if p.get('name')]
             if apply_people_exif(media_path, names, self.onlytest):
-                self.count_people_fixed += 1
+                c.people_fixed += 1
 
-        # ── Description + Origin ──────────────────────────────────────────────
+        # Description + Origin
         if self.fix_description:
             desc = meta.get('description', '')
             origin = _extract_origin(meta.get('googlePhotosOrigin', {}))
             if apply_description_exif(media_path, desc, origin, self.onlytest):
-                self.count_description_fixed += 1
+                c.description_fixed += 1
 
-        # ── Rating (favorited) ────────────────────────────────────────────────
+        # Rating
         if self.fix_rating:
             if apply_rating_exif(media_path, bool(meta.get('favorited')), self.onlytest):
-                self.count_rating_fixed += 1
+                c.rating_fixed += 1
 
-        # ── Renommage ─────────────────────────────────────────────────────────
+        # Renommage
         new_path = media_path
         fname_stem = os.path.splitext(os.path.basename(media_path))[0]
         if ALREADY_DATED_RE.match(fname_stem):
-            self.count_already_dated += 1
+            c.already_dated += 1
             if self.verbose:
                 print(f'  dated {decode_safe(os.path.basename(media_path))}')
         elif dt:
             directory = os.path.dirname(media_path)
             _, media_ext = os.path.splitext(media_path)
             base_title = title or os.path.basename(media_path)
-            # ~tmpXXX_NOM.jpg → NOM~tmpXXX.jpg
             title_stem = os.path.splitext(base_title)[0]
             m = TMP_PREFIX_RE.match(title_stem)
             if m:
@@ -665,14 +598,14 @@ class TakeoutCleaner:
                         else f'{prefix}_{clean_title}{media_ext}')
             candidate = os.path.join(directory, new_name)
             if os.path.basename(candidate) != os.path.basename(media_path):
-                self.count_renamed += 1
+                c.renamed += 1
                 new_path = candidate
                 if self.verbose:
                     print(f'  ren  {decode_safe(os.path.basename(media_path))} → {decode_safe(new_name)}')
                 if self.rename and not self.onlytest:
                     safe_rename(media_path, candidate)
 
-        # ── Suppression / mise à jour JSON (tous les JSON du groupe) ──────────
+        # JSON : suppression ou mise à jour
         for jp in json_paths:
             if self.delete_json:
                 if not self.onlytest:
@@ -680,8 +613,11 @@ class TakeoutCleaner:
                         os.remove(jp)
                     except OSError as e:
                         self.errors.append(f'Cannot delete {jp}: {e}')
-                self.count_json_deleted += 1
+                c.json_deleted += 1
             elif self.rename and new_path != media_path:
+                # TODO: si len(json_paths) > 1, tous les JSONs sont renommés vers
+                #       new_path + '.json' → safe_rename crée _001.json, _002.json…
+                #       Il faudrait n'en garder qu'un seul (le merged) et supprimer les autres
                 new_json = new_path + '.json'
                 if not self.onlytest:
                     try:
@@ -694,22 +630,34 @@ class TakeoutCleaner:
                 if self.verbose:
                     print(f'  json {decode_safe(os.path.basename(jp))} → {decode_safe(os.path.basename(new_json))}')
 
-        # ── mtime : toujours en dernier pour écraser les touches précédentes ──
+        # mtime : toujours en dernier
         if dt and self.fix_mtime:
-            # Après un rename effectif, le fichier est à new_path
-            actual_path = new_path if (self.rename and not self.onlytest and new_path != media_path) else media_path
-            if set_file_mtime(actual_path, dt, self.onlytest):
-                self.count_mtime_fixed += 1
+            actual = new_path if (self.rename and not self.onlytest and new_path != media_path) else media_path
+            if set_file_mtime(actual, dt, self.onlytest):
+                c.mtime_fixed += 1
+
+    # ── 1.4 : résumé dossier ─────────────────────────────────────────────────
+    def _print_dir_summary(self) -> None:
+        c = self.curr_counters
+        name = os.path.relpath(self.curr_dir, self.source) or '.'
+        print(f'  [{decode_safe(name)}]  '
+              f'médias={c.processed}  '
+              f'exif={c.exif_fixed}  '
+              f'gps={c.gps_fixed}  '
+              f'mtime={c.mtime_fixed}  '
+              f'ren={c.renamed}  '
+              f'dated={c.already_dated}')
 
     # ── Suppression des dossiers vides ────────────────────────────────────────
-    def remove_empty_dirs(self) -> None:
+    def _remove_empty_dirs(self) -> None:
         if not self.recursive:
             return
+        # TODO: double parcours os.walk ; pourrait être fusionné avec le parcours principal
         for root, dirs, files in os.walk(self.source, topdown=False):
             if root == self.source:
                 continue
             if not os.listdir(root):
-                self.count_empty_dirs += 1
+                self.totals.empty_dirs += 1
                 if not self.onlytest:
                     try:
                         os.rmdir(root)
@@ -724,8 +672,8 @@ class TakeoutCleaner:
             print(f"Erreur : {self.source} n'est pas un répertoire valide.", file=sys.stderr)
             sys.exit(1)
 
-        print(f'Paramètres')
-        print(f'----------')
+        print('Paramètres')
+        print('----------')
         print(f'  Source          : {self.source}')
         print(f'  Mode            : {"TEST (aucune modification)" if self.onlytest else "RÉEL"}')
         print(f'  Récursif        : {"oui" if self.recursive else "non"}')
@@ -741,66 +689,81 @@ class TakeoutCleaner:
         print(f'  Verbose         : {"oui" if self.verbose else "non"}')
         print()
 
-        self.scan()
-        print()
-
         mode = '*** MODE TEST — aucune modification ***' if self.onlytest else 'MODE RÉEL'
 
-        # ── Passe 1 : chargement des JSON d'album (défauts) ──────────────────
-        if self.album_json_files:
-            header = f'Passe 1 [{mode}]  —  {len(self.album_json_files)} JSON d\'album'
-            print(header)
-            print('-' * len(header))
-            for json_path in self.album_json_files:
-                self._load_album_json(json_path)
-            print()
+        # Collecter les dossiers à traiter
+        if self.recursive:
+            dirs_to_process = sorted({root for root, _, _ in os.walk(self.source)})
+        else:
+            dirs_to_process = [self.source]
 
-        # ── Passe 2 : groupement + merge + application ────────────────────────
-        groups = self._group_sidecar_json()
-        merged_count = sum(1 for metas, _ in groups.values() if len(metas) > 1)
-        header = f'Passe 2 [{mode}]  —  {len(groups)} médias ({len(self.json_files)} JSON'
-        header += f', {merged_count} fusionnés)' if merged_count else ')'
-        print(header)
-        print('-' * len(header))
-        for media_path, (metas, json_paths) in groups.items():
-            self.process_media_group(media_path, metas, json_paths)
+        print(f'Traitement [{mode}]  —  {len(dirs_to_process)} dossier(s)')
+        print('-' * 80)
+
+        for directory in dirs_to_process:
+            self.curr_dir = directory
+            self.curr_counters = Counters()
+            print(f'  [{decode_safe(os.path.basename(self.curr_dir))}]')
+            try:
+                self.curr_files = os.listdir(self.curr_dir)
+            except OSError:
+                continue
+
+            # 1.1 charger JSON d'album
+            album = self._load_album_json_for_dir()
+
+            # 1.2 grouper les JSON sidecar
+            groups = self._group_sidecar_for_dir(album)
+
+            # 1.3 traiter chaque groupe
+            for media_path, (metas, json_paths) in groups.items():
+                self._process_media_group(media_path, metas, json_paths, album)
+
+            # 1.4 résumé dossier
+            self._print_dir_summary()
+            # if not self.verbose:
+            #     return
+
+            # Accumuler dans les totaux globaux
+            self.totals += self.curr_counters
 
         if self.delete_empty_dirs:
-            self.remove_empty_dirs()
+            self._remove_empty_dirs()
 
         self._print_summary()
 
-    # ── Résumé ────────────────────────────────────────────────────────────────
+    # ── 2 : résumé global ────────────────────────────────────────────────────
     def _print_summary(self) -> None:
         W = 26
-        print('\nRésumé\n------')
-        if self.album_json_files:
-            print(f'  {"Albums chargés":<{W}}: {self.count_album_loaded}')
-        print(f'  {"JSON sidecar":<{W}}: {len(self.json_files)}')
-        print(f'  {"Médias trouvés":<{W}}: {self.count_processed}')
-        if self.count_no_media:
-            print(f'  {"Médias introuvables":<{W}}: {self.count_no_media}')
+        c = self.totals
+        print('\nRésumé global\n-------------')
+        if c.album_loaded:
+            print(f'  {"Albums chargés":<{W}}: {c.album_loaded}')
+        print(f'  {"JSON sidecar":<{W}}: {c.json_sidecar}')
+        print(f'  {"Médias trouvés":<{W}}: {c.processed}')
+        if c.no_media:
+            print(f'  {"Médias introuvables":<{W}}: {c.no_media}')
         if self.fix_exif:
-            print(f'  {"EXIF timestamp":<{W}}: {self.count_exif_fixed}')
+            print(f'  {"EXIF timestamp":<{W}}: {c.exif_fixed}')
         if self.fix_gps:
-            print(f'  {"GPS insérés":<{W}}: {self.count_gps_fixed}')
+            print(f'  {"GPS insérés":<{W}}: {c.gps_fixed}')
         if self.fix_people:
-            print(f'  {"People (Subject+Keywords)":<{W}}: {self.count_people_fixed}')
+            print(f'  {"People (Subject+Keywords)":<{W}}: {c.people_fixed}')
         if self.fix_description:
-            print(f'  {"Description+Origin":<{W}}: {self.count_description_fixed}')
+            print(f'  {"Description+Origin":<{W}}: {c.description_fixed}')
         if self.fix_rating:
-            print(f'  {"Favoris (Rating=5)":<{W}}: {self.count_rating_fixed}')
+            print(f'  {"Favoris (Rating=5)":<{W}}: {c.rating_fixed}')
         if self.fix_mtime:
-            print(f'  {"mtime corrigés":<{W}}: {self.count_mtime_fixed}')
-        if self.count_renamed:
+            print(f'  {"mtime corrigés":<{W}}: {c.mtime_fixed}')
+        if c.renamed:
             label = 'Renommés' if self.rename else 'À renommer (--rename off)'
-            print(f'  {label:<{W}}: {self.count_renamed}')
-        if self.count_already_dated:
-            print(f'  {"Déjà datés (ignorés)":<{W}}: {self.count_already_dated}')
+            print(f'  {label:<{W}}: {c.renamed}')
+        if c.already_dated:
+            print(f'  {"Déjà datés (ignorés)":<{W}}: {c.already_dated}')
         if self.delete_json:
-            print(f'  {"JSON supprimés":<{W}}: {self.count_json_deleted}')
+            print(f'  {"JSON supprimés":<{W}}: {c.json_deleted}')
         if self.delete_empty_dirs:
-            print(f'  {"Dossiers vides":<{W}}: {self.count_empty_dirs}')
+            print(f'  {"Dossiers vides":<{W}}: {c.empty_dirs}')
         if self.errors:
             print(f'\n  Erreurs ({len(self.errors)}) :')
             for e in self.errors:
@@ -832,12 +795,10 @@ Exemples :
 """,
     )
     p.add_argument('source', help='Chemin vers le dossier Google Takeout')
-    p.add_argument(
-        '--apply', dest='onlytest', action='store_false', default=True,
-        help='Applique réellement les modifications (par défaut : mode test)',
-    )
+    p.add_argument('--apply', dest='onlytest', action='store_false', default=True,
+                   help='Applique réellement les modifications (par défaut : mode test)')
     p.add_argument('--no-recursive', dest='recursive', action='store_false', default=True,
-                   help='Ne pas parcourir les sous-dossiers (dossier source uniquement)')
+                   help='Ne pas parcourir les sous-dossiers')
     p.add_argument('--rename', dest='rename', action='store_true', default=False,
                    help='Renommer les fichiers selon la date (YYYYMMDD_HHMMSS_<titre>)')
     p.add_argument('--no-exif', dest='fix_exif', action='store_false', default=True,
@@ -847,7 +808,7 @@ Exemples :
     p.add_argument('--no-people', dest='fix_people', action='store_false', default=True,
                    help='Ne pas écrire les tags people dans XPKeywords')
     p.add_argument('--no-description', dest='fix_description', action='store_false', default=True,
-                   help='Ne pas écrire la description et l\'origine')
+                   help="Ne pas écrire la description et l'origine")
     p.add_argument('--no-rating', dest='fix_rating', action='store_false', default=True,
                    help='Ne pas écrire le rating (favorited → 5 étoiles)')
     p.add_argument('--no-mtime', dest='fix_mtime', action='store_false', default=True,
@@ -864,7 +825,6 @@ Exemples :
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-
     cleaner = TakeoutCleaner(
         source=args.source,
         onlytest=args.onlytest,
