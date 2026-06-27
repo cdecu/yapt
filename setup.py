@@ -40,6 +40,9 @@ setup(
     packages=find_packages(),
     install_requires=['Pillow', 'piexif', 'humanize', 'pyexiftool'],
     entry_points={
-        'console_scripts': ['yapt=yapt.yapt:main']
+        'console_scripts': [
+            'yapt=yapt.yapt:main',
+            'gtclean=yapt.gtclean:main',
+        ]
     }
 )
