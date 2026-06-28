@@ -766,8 +766,8 @@ class TakeoutCleaner:
             print(f'  {"Dossiers vides":<{W}}: {c.empty_dirs}')
         if self.errors:
             print(f'\n  Erreurs ({len(self.errors)}) :')
-            for e in self.errors:
-                print(f'    {e}')
+            # for e in self.errors:
+            #     print(f'    {e}')
         if self.onlytest:
             print('\n  ⚠  Mode test : relancez avec --apply pour appliquer les modifications.')
         print()
